@@ -56,7 +56,7 @@ interface InteractionRule {
 
 interface EntityArchetype {
   id: string;
-  components: any; // we’ll refine later
+  components: any; // refine later
 }
 
 interface RDLCore {
@@ -100,7 +100,7 @@ interface Appearance {
 }
 
 interface Mind {
-  type: "external_controlled" | "ai_controlled";
+  type: "external_controlled" | "ai_controlled" | string;
   channels: string[];
 }
 
@@ -125,6 +125,32 @@ interface WorldState {
 }
 
 // ---------------------------
+// Control & Perception
+// ---------------------------
+
+interface InputState {
+  // desired movement direction in local/world space (for now world XZ)
+  move: Vec3;
+}
+
+interface PerceivedEntity {
+  id: EntityId;
+  relativePosition: Vec3;
+  distance: number;
+}
+
+interface PerceptualFrame {
+  tick: number;
+  timeSeconds: number;
+  self: {
+    id: EntityId;
+    position: Vec3;
+    velocity: Vec3;
+  };
+  nearbyEntities: PerceivedEntity[];
+}
+
+// ---------------------------
 // Kernel Class
 // ---------------------------
 
@@ -133,6 +159,9 @@ export class CoreRealityKernel {
   private world: WorldState;
   private nextEntityId: EntityId = 1;
   private running: boolean = false;
+
+  private controlInputs: Map<EntityId, InputState> = new Map();
+  private controlledEntities: Set<EntityId> = new Set();
 
   constructor(rdlPath: string) {
     this.rdl = this.loadRdl(rdlPath);
@@ -169,7 +198,6 @@ export class CoreRealityKernel {
   }
 
   private bootstrapWorldFromArchetypes(archetypes: EntityArchetype[]) {
-    // For v0.1, we’ll just create a single example entity for each archetype
     for (const arch of archetypes) {
       const entity = this.createEntity();
       const comps = arch.components;
@@ -198,6 +226,11 @@ export class CoreRealityKernel {
         this.world.components.mind.set(entity, {
           ...comps.mind
         });
+
+        if (comps.mind.type === "external_controlled") {
+          // Mark as potentially controllable
+          this.controlledEntities.add(entity);
+        }
       }
 
       if (comps.identity) {
@@ -208,6 +241,84 @@ export class CoreRealityKernel {
 
       console.log(`[CRK] Spawned entity ${entity} from archetype "${arch.id}"`);
     }
+  }
+
+  // ---------------------------
+  // Public control hooks
+  // ---------------------------
+
+  /**
+   * Register an entity as actively controlled (e.g., by a logged-in human).
+   */
+  public registerControlledEntity(entityId: EntityId) {
+    if (!this.world.components.transform.has(entityId)) {
+      throw new Error(`Entity ${entityId} has no transform, cannot control.`);
+    }
+    this.controlledEntities.add(entityId);
+    if (!this.controlInputs.has(entityId)) {
+      this.controlInputs.set(entityId, { move: [0, 0, 0] });
+    }
+    console.log(`[CRK] Registered controlled entity: ${entityId}`);
+  }
+
+  /**
+   * Update the input state for a given entity (e.g., WASD movement).
+   */
+  public setInputState(entityId: EntityId, input: InputState) {
+    if (!this.controlledEntities.has(entityId)) {
+      this.registerControlledEntity(entityId);
+    }
+    this.controlInputs.set(entityId, input);
+  }
+
+  /**
+   * Get the current world state snapshot (for debugging).
+   */
+  public getWorldState(): WorldState {
+    return this.world;
+  }
+
+  /**
+   * Build a perceptual frame for a given entity:
+   * - self position/velocity
+   * - nearby entities within a radius
+   */
+  public getPerceptualFrame(entityId: EntityId, radius: number = 50): PerceptualFrame | null {
+    const transform = this.world.components.transform.get(entityId);
+    const body = this.world.components.physics_body.get(entityId);
+    if (!transform || !body) return null;
+
+    const position = transform.position;
+    const velocity = body.velocity;
+
+    const nearbyEntities: PerceivedEntity[] = [];
+
+    for (const [otherId, otherTransform] of this.world.components.transform) {
+      if (otherId === entityId) continue;
+      const op = otherTransform.position;
+      const dx = op[0] - position[0];
+      const dy = op[1] - position[1];
+      const dz = op[2] - position[2];
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (dist <= radius) {
+        nearbyEntities.push({
+          id: otherId,
+          relativePosition: [dx, dy, dz],
+          distance: dist
+        });
+      }
+    }
+
+    return {
+      tick: this.world.tick,
+      timeSeconds: this.world.timeSeconds,
+      self: {
+        id: entityId,
+        position: [...position] as Vec3,
+        velocity: [...velocity] as Vec3
+      },
+      nearbyEntities
+    };
   }
 
   // ---------------------------
@@ -245,7 +356,7 @@ export class CoreRealityKernel {
     this.world.tick += 1;
     this.world.timeSeconds += dt;
 
-    // 1. Apply mind/controller logic (not implemented yet)
+    // 1. Apply mind/controller logic
     this.updateMinds(dt);
 
     // 2. Apply physics
@@ -258,10 +369,40 @@ export class CoreRealityKernel {
     this.emitTickSummary();
   }
 
-  private updateMinds(_dt: number) {
-    // Placeholder:
-    // - external_controlled: later hooked to client inputs
-    // - ai_controlled: run AI brain/update behavior
+  private updateMinds(dt: number) {
+    // For external-controlled entities, translate input into velocity changes.
+    const moveSpeed = 5; // m/s, base walking speed
+
+    for (const entityId of this.controlledEntities) {
+      const input = this.controlInputs.get(entityId);
+      if (!input) continue;
+
+      const body = this.world.components.physics_body.get(entityId);
+      const transform = this.world.components.transform.get(entityId);
+      if (!body || !transform) continue;
+
+      const move = input.move;
+
+      // Normalize move vector on XZ plane
+      const mx = move[0];
+      const mz = move[2];
+      const mag = Math.sqrt(mx * mx + mz * mz);
+      let vx = body.velocity[0];
+      let vz = body.velocity[2];
+
+      if (mag > 0.0001) {
+        const nx = mx / mag;
+        const nz = mz / mag;
+        vx = nx * moveSpeed;
+        vz = nz * moveSpeed;
+      } else {
+        // No input → simple damping to stop sliding
+        vx *= 0.8;
+        vz *= 0.8;
+      }
+
+      body.velocity = [vx, body.velocity[1], vz];
+    }
   }
 
   private updatePhysics(dt: number) {
@@ -299,8 +440,7 @@ export class CoreRealityKernel {
   }
 
   private resolveInteractions() {
-    // For v0.1 we’ll skip actual collision and just log occasional info.
-    // Later: broadphase + narrowphase + rule application.
+    // Placeholder for proper collision & interaction rules.
   }
 
   private emitTickSummary() {
@@ -311,25 +451,40 @@ export class CoreRealityKernel {
       );
     }
   }
-
-  // ---------------------------
-  // Public hooks (for shards/clients later)
-  // ---------------------------
-
-  public getWorldState(): WorldState {
-    return this.world;
-  }
 }
 
 // ---------------------------
-// Script entry (for quick test)
+// Script entry (demo mode)
 // ---------------------------
 
 if (require.main === module) {
   const rdlPath = process.argv[2] || "./spec/rdl/rdl-core-v0.1.json";
   const kernel = new CoreRealityKernel(rdlPath);
+
+  // Pick the first entity as controlled (for now)
+  const world = kernel.getWorldState();
+  const firstEntityId = Array.from(world.components.transform.keys())[0];
+  if (firstEntityId !== undefined) {
+    kernel.registerControlledEntity(firstEntityId);
+
+    // Simple constant "forward" input on +X
+    kernel.setInputState(firstEntityId, { move: [1, 0, 0] });
+  }
+
   kernel.start();
 
-  // Stop after 10 seconds for a basic demo
-  setTimeout(() => kernel.stop(), 10000);
+  // Periodically log a perceptual frame for the controlled entity
+  const logInterval = setInterval(() => {
+    if (firstEntityId === undefined) return;
+    const frame = kernel.getPerceptualFrame(firstEntityId, 50);
+    if (frame) {
+      console.log("[PERCEPT]", JSON.stringify(frame, null, 2));
+    }
+  }, 1000);
+
+  // Stop after 10 seconds for demo
+  setTimeout(() => {
+    clearInterval(logInterval);
+    kernel.stop();
+  }, 10000);
 }
