@@ -194,7 +194,8 @@ function render() {
     return;
   }
 
-  const { self, nearbyEntities, foamPatch, concepts } = lastFrame;
+  const { self, nearbyEntities, foamPatch, concepts, resonance, graphSummary } = lastFrame;
+
 
 
   const cx = canvas.width / 2;
@@ -294,6 +295,54 @@ function render() {
     }
   }
 
+    // ---- Thought graph inspector ----
+  if (graphSummary) {
+    const { concepts: conceptNodes, edges } = graphSummary;
+
+    ctx.fillStyle = "#ff0";
+    ctx.font = "12px system-ui";
+
+    // Right-side panel
+    const panelX = canvas.width - 260;
+    let y = 40;
+
+    ctx.fillText("Global Concepts:", panelX, y);
+    y += 14;
+    if (Array.isArray(conceptNodes) && conceptNodes.length > 0) {
+      for (let i = 0; i < Math.min(conceptNodes.length, 5); i++) {
+        const c = conceptNodes[i];
+        ctx.fillText(
+          `${c.label}: ${c.weight.toFixed(0)}`,
+          panelX,
+          y
+        );
+        y += 14;
+      }
+    } else {
+      ctx.fillText("(none yet)", panelX, y);
+      y += 14;
+    }
+
+    y += 10;
+    ctx.fillText("Top Concept Links:", panelX, y);
+    y += 14;
+
+    if (Array.isArray(edges) && edges.length > 0) {
+      for (let i = 0; i < Math.min(edges.length, 5); i++) {
+        const e = edges[i];
+        ctx.fillText(
+          `${e.a} ↔ ${e.b}: ${e.weight.toFixed(0)}`,
+          panelX,
+          y
+        );
+        y += 14;
+      }
+    } else {
+      ctx.fillText("(none yet)", panelX, y);
+    }
+  }
+
+
 
   // ---- HUD ----
   ctx.fillStyle = "#ccc";
@@ -303,6 +352,25 @@ function render() {
     20,
     canvas.height - 40
   );
+
+    // ---- Resonance HUD ----
+  if (resonance) {
+    ctx.fillStyle = "#0ff";
+    ctx.font = "12px system-ui";
+    const baseY = canvas.height - 80;
+    ctx.fillText(`Resonance (local): ${resonance.local.toFixed(2)}`, 20, baseY);
+
+    let y = baseY + 14;
+    const labelEntries = Object.entries(resonance.labels)
+      .filter(([_, v]) => v > 0.01)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 4);
+    for (const [label, value] of labelEntries) {
+      ctx.fillText(`${label}: ${value.toFixed(2)}`, 20, y);
+      y += 14;
+    }
+  }
+
 }
 
 
