@@ -160,72 +160,108 @@
     // ---------------------------
     // Simple rendering
     // ---------------------------
+function render() {
+  requestAnimationFrame(render);
 
-    function render() {
-      const cx = canvas.width / 2;
-      const cy = canvas.height / 2;
-      const scale = 5; // pixels per meter
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      // Draw foam / semantic field as a heatmap centered on self
-      const patch = lastFrame.foamPatch;
-      if (patch && patch.width > 0 && patch.height > 0) {
-        const halfW = patch.width / 2;
-        const halfH = patch.height / 2;
-        const cellPixel = patch.cellSize * scale;
+  if (!lastFrame) {
+    ctx.fillStyle = "#666";
+    ctx.font = "16px system-ui";
+    ctx.fillText("Waiting for frame...", 20, 40);
+    return;
+  }
 
-        for (let py = 0; py < patch.height; py++) {
-          const row = patch.values[py];
-          if (!row) continue;
-          for (let px = 0; px < patch.width; px++) {
-            const v = row[px] || 0;
-            if (v <= 0.001) continue;
+  const { self, nearbyEntities, foamPatch } = lastFrame;
 
-            // Map foam intensity to alpha
-            const alpha = Math.max(0, Math.min(1, v * 0.8));
+  const cx = canvas.width / 2;
+  const cy = canvas.height / 2;
+  const scale = 5; // pixels per meter
 
-            ctx.fillStyle = `rgba(0, 150, 255, ${alpha})`;
+  // ---- Foam / semantic field heatmap ----
+  if (foamPatch && foamPatch.width > 0 && foamPatch.height > 0) {
+    const halfW = foamPatch.width / 2;
+    const halfH = foamPatch.height / 2;
+    const cellPixel = foamPatch.cellSize * scale;
 
-            // Patch is centered on the player: dx/dz are offsets
-            const dx = (px - halfW + 0.5) * cellPixel;
-            const dz = (py - halfH + 0.5) * cellPixel;
+    for (let py = 0; py < foamPatch.height; py++) {
+      const row = foamPatch.values[py];
+      if (!row) continue;
+      for (let px = 0; px < foamPatch.width; px++) {
+        const v = row[px] || 0;
+        if (v <= 0.001) continue;
 
-            const x = cx + dx;
-            const y = cy + dz;
+        const alpha = Math.max(0, Math.min(1, v * 0.8));
+        ctx.fillStyle = `rgba(0, 150, 255, ${alpha})`;
 
-            ctx.fillRect(
-              x - cellPixel / 2,
-              y - cellPixel / 2,
-              cellPixel,
-              cellPixel
-            );
-          }
-        }
+        const dx = (px - halfW + 0.5) * cellPixel;
+        const dz = (py - halfH + 0.5) * cellPixel;
+
+        const x = cx + dx;
+        const y = cy + dz;
+
+        ctx.fillRect(
+          x - cellPixel / 2,
+          y - cellPixel / 2,
+          cellPixel,
+          cellPixel
+        );
       }
-
-      // Draw background grid (optional)
-      ctx.strokeStyle = "rgba(255,255,255,0.04)";
-      ctx.lineWidth = 1;
-      const gridSpacing = 50;
-      for (let x = cx % gridSpacing; x < canvas.width; x += gridSpacing) {
-        ctx.beginPath();
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, canvas.height);
-        ctx.stroke();
-      }
-      for (let y = cy % gridSpacing; y < canvas.height; y += gridSpacing) {
-        ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(canvas.width, y);
-        ctx.stroke();
-      }
-
-      // Draw self at center
-      ctx.fillStyle = "#00ff99";
-      ctx.beginPath();
-      ctx.arc(cx, cy, 8, 0, Math.PI * 2);
-      ctx.fill();
-
     }
+  }
+
+  // ---- Background grid ----
+  ctx.strokeStyle = "rgba(255,255,255,0.04)";
+  ctx.lineWidth = 1;
+  const gridSpacing = 50;
+  for (let x = cx % gridSpacing; x < canvas.width; x += gridSpacing) {
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, canvas.height);
+    ctx.stroke();
+  }
+  for (let y = cy % gridSpacing; y < canvas.height; y += gridSpacing) {
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(canvas.width, y);
+    ctx.stroke();
+  }
+
+  // ---- Self ----
+  ctx.fillStyle = "#00ff99";
+  ctx.beginPath();
+  ctx.arc(cx, cy, 8, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "12px system-ui";
+  ctx.fillText(`You (entity ${self.id})`, cx + 12, cy - 12);
+
+  // ---- Nearby entities ----
+  ctx.fillStyle = "#ff4080";
+  if (Array.isArray(nearbyEntities)) {
+    for (const ent of nearbyEntities) {
+      const dx = ent.relativePosition[0];
+      const dz = ent.relativePosition[2];
+      const ex = cx + dx * scale;
+      const ey = cy + dz * scale;
+
+      ctx.beginPath();
+      ctx.arc(ex, ey, 5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // ---- HUD ----
+  ctx.fillStyle = "#ccc";
+  ctx.font = "12px system-ui";
+  ctx.fillText(
+    `t=${lastFrame.timeSeconds.toFixed(2)}s  tick=${lastFrame.tick}`,
+    20,
+    canvas.height - 40
+  );
+}
+
 
     render();
   </script>
