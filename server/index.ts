@@ -2,7 +2,7 @@
 import path from "path";
 import express from "express";
 import http from "http";
-import { WebSocketServer, WebSocket } from "ws";
+import { WebSocketServer, WebSocket, RawData } from "ws";
 import { CoreRealityKernel } from "../engine/core/kernel";
 
 type EntityId = number;
@@ -83,17 +83,18 @@ wss.on("connection", (ws: WebSocket) => {
     `[WSS] Assigned entity ${entityId} to client (#${clients.size})`
   );
 
-  ws.on("message", (data: WebSocket.RawData) => {
-    try {
-      const text = typeof data === "string" ? data : data.toString("utf-8");
-      const msg = JSON.parse(text) as InputMessage;
-      if (msg.type === "input") {
-        kernel.setInputState(entityId, { move: msg.move });
-      }
-    } catch (err) {
-      console.error("[WSS] Error parsing client message:", err);
+  ws.on("message", (data: RawData) => {
+  try {
+    const text = typeof data === "string" ? data : data.toString("utf-8");
+    const msg = JSON.parse(text) as InputMessage;
+    if (msg.type === "input") {
+      kernel.setInputState(entityId, { move: msg.move });
     }
-  });
+  } catch (err) {
+    console.error("[WSS] Error parsing client message:", err);
+  }
+});
+
 
   ws.on("close", () => {
     console.log("[WSS] Client disconnected");
