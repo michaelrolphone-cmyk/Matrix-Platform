@@ -63,7 +63,9 @@
     // WebSocket connection
     // ---------------------------
 
-    const WS_URL = "ws://localhost:8080";
+    const WS_URL =
+  (location.protocol === "https:" ? "wss://" : "ws://") + location.host;
+
     let socket = null;
     let lastFrame = null;
 
