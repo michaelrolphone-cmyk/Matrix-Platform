@@ -37,7 +37,7 @@ type ClientMessage = InputMessage | ConceptMessage;
 
 const RDL_PATH = process.env.RDL_PATH || "./spec/rdl/rdl-core-v0.1.json";
 const PORT = Number(process.env.PORT || 8080);
-const PERCEPT_RADIUS = 50;
+const PERCEPT_RADIUS = 200;
 const TICK_BROADCAST_MS = 100;
 
 // ---------------------------
@@ -127,6 +127,7 @@ ws.on("message", (data: RawData) => {
 setInterval(() => {
   for (const [ws, client] of clients.entries()) {
     if (ws.readyState !== WebSocket.OPEN) continue;
+  
     const frame = kernel.getPerceptualFrame(client.entityId, PERCEPT_RADIUS);
     if (!frame) continue;
     const message: FrameMessage = { type: "frame", frame };
