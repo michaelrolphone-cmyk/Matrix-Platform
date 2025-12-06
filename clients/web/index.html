@@ -2,413 +2,492 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Matrix Client - Top-down Demo</title>
+  <title>Matrix Shard – 3D Shell</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     html, body {
       margin: 0;
       padding: 0;
-      background: #050510;
-      color: #eee;
-      font-family: system-ui, sans-serif;
       height: 100%;
       overflow: hidden;
+      background: radial-gradient(circle at top, #202640 0, #050510 55%, #000 100%);
+      color: #e0ecff;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    #app {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
     }
     #ui {
       position: absolute;
-      top: 8px;
-      left: 8px;
-      right: 8px;
+      top: 10px;
+      left: 10px;
+      right: 10px;
       display: flex;
       justify-content: space-between;
       z-index: 10;
       pointer-events: none;
     }
-    #status {
+    .panel {
+      background: rgba(5, 8, 20, 0.82);
+      border: 1px solid rgba(140, 190, 255, 0.3);
+      border-radius: 8px;
+      padding: 8px 10px;
       font-size: 12px;
-      opacity: 0.7;
+      max-width: 280px;
+      pointer-events: auto;
+      backdrop-filter: blur(6px);
+      box-shadow: 0 0 18px rgba(0, 0, 0, 0.6);
     }
-    #help {
+    .panel h1 {
+      font-size: 13px;
+      margin: 0 0 4px 0;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: #9cc5ff;
+    }
+    .panel h2 {
       font-size: 12px;
-      opacity: 0.7;
-      text-align: right;
+      margin: 6px 0 2px 0;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #8fffd1;
     }
+    .panel p {
+      margin: 2px 0;
+      line-height: 1.3;
+    }
+    .muted {
+      opacity: 0.7;
+      font-size: 11px;
+    }
+    #statusText { color: #9cc5ff; }
+    #moodText { color: #c6ff9c; }
+    #worldMoodText { color: #ffd27f; }
+
+    #narrativePanel {
+      position: absolute;
+      left: 10px;
+      bottom: 10px;
+      right: 10px;
+      z-index: 10;
+      pointer-events: none;
+    }
+    #narrativeInner {
+      max-width: 520px;
+    }
+    #narrativeInner p {
+      margin: 0 0 3px 0;
+      font-size: 12px;
+    }
+
     canvas {
       display: block;
-      width: 100vw;
-      height: 100vh;
+      width: 100%;
+      height: 100%;
+    }
+
+    @media (max-width: 720px) {
+      .panel { max-width: 220px; }
+      #ui { flex-direction: column; gap: 8px; }
     }
   </style>
 </head>
 <body>
+<div id="app">
   <div id="ui">
-    <div id="status">Connecting...</div>
-    <div id="help">W/A/S/D to move (top-down)</div>
+    <div class="panel">
+      <h1>Shard Status</h1>
+      <p id="statusText">Connecting...</p>
+      <p class="muted" id="tickText">t = -- s · tick = --</p>
+      <p class="muted" id="helpText">
+        Move: W/A/S/D · Inject: 1=curiosity, 2=danger, 3=calm
+      </p>
+    </div>
+    <div class="panel">
+      <h1>State &#38; Mood</h1>
+      <p id="moodText">mood: --</p>
+      <p id="worldMoodText">world mood: --</p>
+      <h2>Local resonance</h2>
+      <div id="resonanceList" class="muted">(no field activity yet)</div>
+      <h2>Graph summary</h2>
+      <div id="graphSummary" class="muted">(no concepts yet)</div>
+    </div>
   </div>
+
+  <div id="narrativePanel">
+    <div class="panel" id="narrativeInner">
+      <h1>Shard Narrative</h1>
+      <div id="narrativeLines">
+        <p class="muted">Waiting for the world to speak...</p>
+      </div>
+    </div>
+  </div>
+
   <canvas id="view"></canvas>
+</div>
 
-  <script>
-    const statusEl = document.getElementById("status");
-    const canvas = document.getElementById("view");
-    const ctx = canvas.getContext("2d");
+<script type="module">
+  import * as THREE from "https://unpkg.com/three@0.163.0/build/three.module.js";
 
-    function resize() {
-      canvas.width = window.innerWidth;
-      canvas.height = window.innerHeight;
-    }
-    window.addEventListener("resize", resize);
-    resize();
+  const statusEl = document.getElementById("statusText");
+  const tickEl = document.getElementById("tickText");
+  const moodEl = document.getElementById("moodText");
+  const worldMoodEl = document.getElementById("worldMoodText");
+  const resonanceEl = document.getElementById("resonanceList");
+  const graphSummaryEl = document.getElementById("graphSummary");
+  const narrativeLinesEl = document.getElementById("narrativeLines");
+  const canvas = document.getElementById("view");
 
-    // ---------------------------
-    // WebSocket connection
-    // ---------------------------
+  // ---------------------------
+  // Three.js scene setup
+  // ---------------------------
 
-    const WS_URL =
-  (location.protocol === "https:" ? "wss://" : "ws://") + location.host;
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  renderer.setPixelRatio(window.devicePixelRatio || 1);
+  renderer.setSize(window.innerWidth, window.innerHeight);
 
-    let socket = null;
-    let lastFrame = null;
+  const scene = new THREE.Scene();
+  scene.fog = new THREE.FogExp2(0x050510, 0.018);
 
-    function connect() {
-      socket = new WebSocket(WS_URL);
+  const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 500);
+  camera.position.set(0, 40, 40);
+  camera.lookAt(0, 0, 0);
 
-      socket.addEventListener("open", () => {
-        statusEl.textContent = "Connected";
-      });
+  // Lights
+  const hemiLight = new THREE.HemisphereLight(0x88bbff, 0x202030, 0.8);
+  scene.add(hemiLight);
 
-      socket.addEventListener("close", () => {
-        statusEl.textContent = "Disconnected";
-      });
+  const dirLight = new THREE.DirectionalLight(0xffffff, 0.6);
+  dirLight.position.set(20, 40, 10);
+  scene.add(dirLight);
 
-      socket.addEventListener("error", (err) => {
-        console.error("WS error", err);
-        statusEl.textContent = "Error";
-      });
+  // Ground grid
+  const groundGeo = new THREE.PlaneGeometry(400, 400, 40, 40);
+  const groundMat = new THREE.MeshStandardMaterial({
+    color: 0x111522,
+    metalness: 0.1,
+    roughness: 0.9,
+    side: THREE.DoubleSide
+  });
+  const ground = new THREE.Mesh(groundGeo, groundMat);
+  ground.rotation.x = -Math.PI / 2;
+  scene.add(ground);
 
-      socket.addEventListener("message", (event) => {
-        try {
-          const msg = JSON.parse(event.data);
-          if (msg.type === "frame") {
-            lastFrame = msg.frame;
-          }
-        } catch (e) {
-          console.error("Error parsing message", e);
+  const gridHelper = new THREE.GridHelper(200, 40, 0x223355, 0x223355);
+  gridHelper.position.y = 0.01;
+  scene.add(gridHelper);
+
+  // Self avatar
+  const selfGroup = new THREE.Group();
+  scene.add(selfGroup);
+
+  const selfBodyGeo = new THREE.CylinderGeometry(0.6, 0.6, 2.4, 20);
+  const selfBodyMat = new THREE.MeshStandardMaterial({ color: 0x00ff99 });
+  const selfBody = new THREE.Mesh(selfBodyGeo, selfBodyMat);
+  selfBody.position.y = 1.2;
+  selfGroup.add(selfBody);
+
+  const selfHeadGeo = new THREE.SphereGeometry(0.7, 20, 20);
+  const selfHeadMat = new THREE.MeshStandardMaterial({ color: 0xa5ffe0 });
+  const selfHead = new THREE.Mesh(selfHeadGeo, selfHeadMat);
+  selfHead.position.y = 2.4;
+  selfGroup.add(selfHead);
+
+  // Other entities
+  const entityMeshes = new Map(); // id -> THREE.Mesh
+
+  const otherGeo = new THREE.SphereGeometry(0.5, 16, 16);
+  const otherMat = new THREE.MeshStandardMaterial({ color: 0xff4080 });
+
+  // Resonance halo
+  const haloGeo = new THREE.RingGeometry(1.5, 2.3, 40);
+  const haloMat = new THREE.MeshBasicMaterial({
+    color: 0x33bbff,
+    transparent: true,
+    opacity: 0.0,
+    side: THREE.DoubleSide
+  });
+  const halo = new THREE.Mesh(haloGeo, haloMat);
+  halo.rotation.x = -Math.PI / 2;
+  halo.position.y = 0.05;
+  selfGroup.add(halo);
+
+  function resize() {
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    renderer.setSize(w, h);
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+  }
+  window.addEventListener("resize", resize);
+
+  // ---------------------------
+  // WebSocket client
+  // ---------------------------
+
+  const WS_URL =
+    (location.protocol === "https:" ? "wss://" : "ws://") + location.host;
+
+  let socket = null;
+  let lastFrame = null;
+
+  function connect() {
+    socket = new WebSocket(WS_URL);
+
+    socket.addEventListener("open", () => {
+      statusEl.textContent = "Connected · shard online";
+    });
+
+    socket.addEventListener("close", () => {
+      statusEl.textContent = "Disconnected";
+    });
+
+    socket.addEventListener("error", (err) => {
+      console.error("WS error", err);
+      statusEl.textContent = "Error connecting";
+    });
+
+    socket.addEventListener("message", (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg.type === "frame") {
+          lastFrame = msg.frame;
         }
-      });
-    }
-
-    connect();
-
-    // ---------------------------
-    // Input handling (WASD → move vector)
-// ---------------------------
-
-    const keys = {
-      w: false,
-      a: false,
-      s: false,
-      d: false
-    };
-
-    const conceptLabels = {
-      "1": "curiosity",
-      "2": "danger",
-      "3": "calm"
-    };
-    
-    window.addEventListener("keydown", (e) => {
-      const k = e.key.toLowerCase();
-    
-      // Movement keys
-      if (k in keys) {
-        keys[k] = true;
-        e.preventDefault();
-        return;
-      }
-    
-      // Concept injection keys (1,2,3)
-      if (conceptLabels[e.key] && socket && socket.readyState === WebSocket.OPEN) {
-        socket.send(
-          JSON.stringify({
-            type: "concept",
-            label: conceptLabels[e.key]
-          })
-        );
-        e.preventDefault();
-        return;
+      } catch (e) {
+        console.error("Error parsing message", e);
       }
     });
+  }
 
+  connect();
 
-    window.addEventListener("keyup", (e) => {
-      const k = e.key.toLowerCase();
-      if (k in keys) {
-        keys[k] = false;
-        e.preventDefault();
-      }
-    });
+  // ---------------------------
+  // Input handling
+  // ---------------------------
 
-    function currentMoveVector() {
-      let x = 0;
-      let z = 0;
+  const keys = { w: false, a: false, s: false, d: false };
 
-      if (keys.w) z -= 1;
-      if (keys.s) z += 1;
-      if (keys.a) x -= 1;
-      if (keys.d) x += 1;
+  const conceptLabels = {
+    "1": "curiosity",
+    "2": "danger",
+    "3": "calm"
+  };
 
-      // Normalize
-      const mag = Math.hypot(x, z);
-      if (mag > 0) {
-        x /= mag;
-        z /= mag;
-      }
-      return [x, 0, z];
+  window.addEventListener("keydown", (e) => {
+    const k = e.key.toLowerCase();
+
+    // Movement keys
+    if (k in keys) {
+      keys[k] = true;
+      e.preventDefault();
+      return;
     }
 
-    // Send input periodically
-    setInterval(() => {
-      if (!socket || socket.readyState !== WebSocket.OPEN) return;
-      const move = currentMoveVector();
-
+    // Concept injection keys
+    if (conceptLabels[e.key] && socket && socket.readyState === WebSocket.OPEN) {
       socket.send(
         JSON.stringify({
-          type: "input",
-          move: move
+          type: "concept",
+          label: conceptLabels[e.key]
         })
       );
-    }, 50);
-
-    // ---------------------------
-    // Simple rendering
-    // ---------------------------
-function render() {
-  requestAnimationFrame(render);
-
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-  if (!lastFrame) {
-    ctx.fillStyle = "#666";
-    ctx.font = "16px system-ui";
-    ctx.fillText("Waiting for frame...", 20, 40);
-    return;
-  }
-
-const {
-  self,
-  nearbyEntities,
-  foamPatch,
-  concepts,
-  resonance,
-  graphSummary,
-  narrative,
-  worldMood
-} = lastFrame;
-
-
-
-  const cx = canvas.width / 2;
-  const cy = canvas.height / 2;
-  const scale = 5; // pixels per meter
-
-  // ---- Foam / semantic field heatmap ----
-  if (foamPatch && foamPatch.width > 0 && foamPatch.height > 0) {
-    const halfW = foamPatch.width / 2;
-    const halfH = foamPatch.height / 2;
-    const cellPixel = foamPatch.cellSize * scale;
-
-    for (let py = 0; py < foamPatch.height; py++) {
-      const row = foamPatch.values[py];
-      if (!row) continue;
-      for (let px = 0; px < foamPatch.width; px++) {
-        const v = row[px] || 0;
-        if (v <= 0.001) continue;
-
-        const alpha = Math.max(0, Math.min(1, v * 0.8));
-        ctx.fillStyle = `rgba(0, 150, 255, ${alpha})`;
-
-        const dx = (px - halfW + 0.5) * cellPixel;
-        const dz = (py - halfH + 0.5) * cellPixel;
-
-        const x = cx + dx;
-        const y = cy + dz;
-
-        ctx.fillRect(
-          x - cellPixel / 2,
-          y - cellPixel / 2,
-          cellPixel,
-          cellPixel
-        );
-      }
+      e.preventDefault();
+      return;
     }
-  }
+  });
 
-  // ---- Background grid ----
-  ctx.strokeStyle = "rgba(255,255,255,0.04)";
-  ctx.lineWidth = 1;
-  const gridSpacing = 50;
-  for (let x = cx % gridSpacing; x < canvas.width; x += gridSpacing) {
-    ctx.beginPath();
-    ctx.moveTo(x, 0);
-    ctx.lineTo(x, canvas.height);
-    ctx.stroke();
-  }
-  for (let y = cy % gridSpacing; y < canvas.height; y += gridSpacing) {
-    ctx.beginPath();
-    ctx.moveTo(0, y);
-    ctx.lineTo(canvas.width, y);
-    ctx.stroke();
-  }
-
-  // ---- Self ----
-  ctx.fillStyle = "#00ff99";
-  ctx.beginPath();
-  ctx.arc(cx, cy, 8, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.fillStyle = "#ffffff";
-  ctx.font = "12px system-ui";
-  ctx.fillText(`You (entity ${self.id})`, cx + 12, cy - 12);
-
-  // ---- Nearby entities ----
-  ctx.fillStyle = "#ff4080";
-  if (Array.isArray(nearbyEntities)) {
-    for (const ent of nearbyEntities) {
-      const dx = ent.relativePosition[0];
-      const dz = ent.relativePosition[2];
-      const ex = cx + dx * scale;
-      const ey = cy + dz * scale;
-
-      ctx.beginPath();
-      ctx.arc(ex, ey, 5, 0, Math.PI * 2);
-      ctx.fill();
+  window.addEventListener("keyup", (e) => {
+    const k = e.key.toLowerCase();
+    if (k in keys) {
+      keys[k] = false;
+      e.preventDefault();
     }
+  });
+
+  function currentMoveVector() {
+    let x = 0;
+    let z = 0;
+    if (keys.w) z -= 1;
+    if (keys.s) z += 1;
+    if (keys.a) x -= 1;
+    if (keys.d) x += 1;
+
+    const mag = Math.hypot(x, z);
+    if (mag > 0) {
+      x /= mag;
+      z /= mag;
+    }
+    return [x, 0, z];
   }
 
-    // ---- Thought inspector ----
-  if (Array.isArray(concepts) && concepts.length > 0) {
-    ctx.fillStyle = "#0ff";
-    ctx.font = "12px system-ui";
-    ctx.fillText("Thoughts (nearby concepts):", 20, canvas.height - 90);
+  // Send input periodically
+  setInterval(() => {
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    const move = currentMoveVector();
+    socket.send(JSON.stringify({ type: "input", move }));
+  }, 50);
 
-    let y = canvas.height - 75;
-    const maxShown = 4;
-    for (let i = 0; i < Math.min(concepts.length, maxShown); i++) {
-      const c = concepts[i];
-      ctx.fillText(
-        `${c.label}: ${c.strength.toFixed(2)}`,
-        20,
-        y
-      );
-      y += 14;
+  // ---------------------------
+  // HUD updaters
+  // ---------------------------
+
+  function setResonanceHUD(resonance) {
+    if (!resonance || resonance.local < 0.01) {
+      resonanceEl.textContent = "(no significant local resonance)";
+      return;
     }
-  }
-
-    // ---- Thought graph inspector ----
-  if (graphSummary) {
-    const { concepts: conceptNodes, edges } = graphSummary;
-
-    ctx.fillStyle = "#ff0";
-    ctx.font = "12px system-ui";
-
-    // Right-side panel
-    const panelX = canvas.width - 260;
-    let y = 40;
-
-    ctx.fillText("Global Concepts:", panelX, y);
-    y += 14;
-    if (Array.isArray(conceptNodes) && conceptNodes.length > 0) {
-      for (let i = 0; i < Math.min(conceptNodes.length, 5); i++) {
-        const c = conceptNodes[i];
-        ctx.fillText(
-          `${c.label}: ${c.weight.toFixed(0)}`,
-          panelX,
-          y
-        );
-        y += 14;
-      }
-    } else {
-      ctx.fillText("(none yet)", panelX, y);
-      y += 14;
-    }
-
-    y += 10;
-    ctx.fillText("Top Concept Links:", panelX, y);
-    y += 14;
-
-    if (Array.isArray(edges) && edges.length > 0) {
-      for (let i = 0; i < Math.min(edges.length, 5); i++) {
-        const e = edges[i];
-        ctx.fillText(
-          `${e.a} ↔ ${e.b}: ${e.weight.toFixed(0)}`,
-          panelX,
-          y
-        );
-        y += 14;
-      }
-    } else {
-      ctx.fillText("(none yet)", panelX, y);
-    }
-  }
-
-  // ---- Narrative log (inner voice of shard) ----
-  if (Array.isArray(narrative) && narrative.length > 0) {
-    ctx.fillStyle = "#0f0";
-    ctx.font = "12px system-ui";
-
-    const x = 20;
-    let y = 60;
-
-    ctx.fillText("Shard narrative:", x, y);
-    y += 14;
-
-    for (let i = 0; i < narrative.length; i++) {
-      ctx.fillText(`- ${narrative[i]}`, x, y);
-      y += 14;
-    }
-  }
-
-
-  // ---- HUD ----
-  ctx.fillStyle = "#ccc";
-  ctx.font = "12px system-ui";
-  ctx.fillText(
-    `t=${lastFrame.timeSeconds.toFixed(2)}s  tick=${lastFrame.tick}`,
-    20,
-    canvas.height - 40
-  );
-  // Player mood + world mood
-  const moodText = self.mood ? `mood: ${self.mood}` : "mood: neutral";
-  const wm = worldMood || "world mood: unknown";
-
-  ctx.fillStyle = "#9cf";
-  ctx.fillText(moodText, 20, canvas.height - 26);
-
-  ctx.fillStyle = "#fcf29f";
-  ctx.fillText(`world mood: ${wm}`, 20, canvas.height - 12);
-
-    // ---- Resonance HUD ----
-  if (resonance) {
-    ctx.fillStyle = "#0ff";
-    ctx.font = "12px system-ui";
-    const baseY = canvas.height - 80;
-    ctx.fillText(`Resonance (local): ${resonance.local.toFixed(2)}`, 20, baseY);
-
-    let y = baseY + 14;
-    const labelEntries = Object.entries(resonance.labels)
+    const parts = [];
+    parts.push(`Σ field: ${resonance.local.toFixed(2)}`);
+    const labelEntries = Object.entries(resonance.labels || {})
       .filter(([_, v]) => v > 0.01)
       .sort((a, b) => b[1] - a[1])
       .slice(0, 4);
     for (const [label, value] of labelEntries) {
-      ctx.fillText(`${label}: ${value.toFixed(2)}`, 20, y);
-      y += 14;
+      parts.push(`${label}: ${value.toFixed(2)}`);
+    }
+    resonanceEl.textContent = parts.join(" · ");
+  }
+
+  function setGraphSummaryHUD(graphSummary) {
+    if (!graphSummary) {
+      graphSummaryEl.textContent = "(no concepts yet)";
+      return;
+    }
+    const lines = [];
+    const nodes = graphSummary.concepts || [];
+    const edges = graphSummary.edges || [];
+
+    if (nodes.length === 0) {
+      lines.push("concepts: none");
+    } else {
+      lines.push(
+        "concepts: " +
+          nodes
+            .slice(0, 3)
+            .map((c) => `${c.label} (${c.weight.toFixed(0)})`)
+            .join(", ")
+      );
+    }
+
+    if (edges.length === 0) {
+      lines.push("links: none");
+    } else {
+      lines.push(
+        "links: " +
+          edges
+            .slice(0, 3)
+            .map((e) => `${e.a}↔${e.b} (${e.weight.toFixed(0)})`)
+            .join(", ")
+      );
+    }
+
+    graphSummaryEl.textContent = lines.join(" · ");
+  }
+
+  function setNarrativeHUD(narrative) {
+    narrativeLinesEl.innerHTML = "";
+    if (!Array.isArray(narrative) || narrative.length === 0) {
+      const p = document.createElement("p");
+      p.className = "muted";
+      p.textContent = "The shard is quiet.";
+      narrativeLinesEl.appendChild(p);
+      return;
+    }
+    for (const line of narrative) {
+      const p = document.createElement("p");
+      p.textContent = line;
+      narrativeLinesEl.appendChild(p);
     }
   }
 
-}
+  // ---------------------------
+  // Animation loop
+  // ---------------------------
 
+  let cameraTarget = new THREE.Vector3(0, 0, 0);
 
-    render();
-  </script>
+  function animate() {
+    requestAnimationFrame(animate);
+
+    if (lastFrame) {
+      const {
+        self,
+        nearbyEntities,
+        resonance,
+        graphSummary,
+        narrative,
+        worldMood
+      } = lastFrame;
+
+      // Self stays at origin in view space
+      selfGroup.position.set(0, 0, 0);
+
+      // Update halo based on local resonance
+      const r = resonance ? resonance.local : 0;
+      const alpha = Math.max(0, Math.min(0.8, r * 0.15));
+      halo.material.opacity = alpha;
+      const scale = 1 + Math.min(2.5, r * 0.3);
+      halo.scale.set(scale, scale, scale);
+
+      // Update other entities relative to self
+      const seenIds = new Set();
+      if (Array.isArray(nearbyEntities)) {
+        for (const ent of nearbyEntities) {
+          const id = ent.id;
+          seenIds.add(id);
+          let mesh = entityMeshes.get(id);
+          if (!mesh) {
+            mesh = new THREE.Mesh(otherGeo, otherMat.clone());
+            mesh.position.y = 1.0;
+            scene.add(mesh);
+            entityMeshes.set(id, mesh);
+          }
+          const dx = ent.relativePosition[0];
+          const dz = ent.relativePosition[2];
+          mesh.position.x = dx;
+          mesh.position.z = dz;
+        }
+      }
+
+      // Hide entities that are not currently in perception
+      for (const [id, mesh] of entityMeshes.entries()) {
+        if (!seenIds.has(id)) {
+          mesh.visible = false;
+        } else {
+          mesh.visible = true;
+        }
+      }
+
+      // Smooth camera to hover over self
+      const desiredCamPos = new THREE.Vector3(0, 30, 30);
+      camera.position.lerp(desiredCamPos, 0.05);
+      cameraTarget.lerp(new THREE.Vector3(0, 1.5, 0), 0.1);
+      camera.lookAt(cameraTarget);
+
+      // HUD text
+      tickEl.textContent =
+        "t = " +
+        lastFrame.timeSeconds.toFixed(2) +
+        " s · tick = " +
+        lastFrame.tick;
+
+      const moodText = self.mood ? `mood: ${self.mood}` : "mood: neutral";
+      moodEl.textContent = moodText;
+
+      const wm = worldMood || "mixed / unknown";
+      worldMoodEl.textContent = "world mood: " + wm;
+
+      setResonanceHUD(resonance);
+      setGraphSummaryHUD(graphSummary);
+      setNarrativeHUD(narrative);
+    }
+
+    renderer.render(scene, camera);
+  }
+
+  animate();
+</script>
 </body>
 </html>
