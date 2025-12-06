@@ -194,7 +194,16 @@ function render() {
     return;
   }
 
-  const { self, nearbyEntities, foamPatch, concepts, resonance, graphSummary } = lastFrame;
+const {
+  self,
+  nearbyEntities,
+  foamPatch,
+  concepts,
+  resonance,
+  graphSummary,
+  narrative,
+  worldMood
+} = lastFrame;
 
 
 
@@ -342,6 +351,22 @@ function render() {
     }
   }
 
+  // ---- Narrative log (inner voice of shard) ----
+  if (Array.isArray(narrative) && narrative.length > 0) {
+    ctx.fillStyle = "#0f0";
+    ctx.font = "12px system-ui";
+
+    const x = 20;
+    let y = 60;
+
+    ctx.fillText("Shard narrative:", x, y);
+    y += 14;
+
+    for (let i = 0; i < narrative.length; i++) {
+      ctx.fillText(`- ${narrative[i]}`, x, y);
+      y += 14;
+    }
+  }
 
 
   // ---- HUD ----
@@ -352,6 +377,15 @@ function render() {
     20,
     canvas.height - 40
   );
+  // Player mood + world mood
+  const moodText = self.mood ? `mood: ${self.mood}` : "mood: neutral";
+  const wm = worldMood || "world mood: unknown";
+
+  ctx.fillStyle = "#9cf";
+  ctx.fillText(moodText, 20, canvas.height - 26);
+
+  ctx.fillStyle = "#fcf29f";
+  ctx.fillText(`world mood: ${wm}`, 20, canvas.height - 12);
 
     // ---- Resonance HUD ----
   if (resonance) {
