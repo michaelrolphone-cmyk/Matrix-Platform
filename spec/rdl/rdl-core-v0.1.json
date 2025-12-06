@@ -1,0 +1,78 @@
+{
+  "rdl_version": "0.1",
+  "universe": {
+    "id": "matrix-alpha",
+    "description": "Earth-like tunable universe on a 5D manifold.",
+    "space": {
+      "type": "euclidean",
+      "dimensions": 3,
+      "units": "meters",
+      "bounds": {
+        "x": [-1000000, 1000000],
+        "y": [-1000000, 1000000],
+        "z": [-100000, 100000]
+      }
+    },
+    "time": {
+      "mode": "discrete",
+      "tick_seconds": 0.01,
+      "max_substeps": 4
+    },
+    "manifold": {
+      "semantic_dimension": 1,
+      "semantic_field": {
+        "type": "scalar",
+        "description": "Cognitive/meaning potential at each point in space-time."
+      }
+    }
+  },
+
+  "sharding": {
+    "strategy": "spatial",
+    "cell_size_m": 1000,
+    "max_entities_per_shard": 100000
+  },
+
+  "entity_archetypes": [
+    {
+      "id": "human_agent",
+      "components": {
+        "transform": { "position": [0,0,0], "rotation": [0,0,0] },
+        "physics_body": {
+          "mass_kg": 70,
+          "collider": "capsule",
+          "radius_m": 0.3,
+          "height_m": 1.8,
+          "dynamic": true
+        },
+        "appearance": {
+          "mesh_id": "humanoid_default",
+          "lods": [ "humanoid_lod0", "humanoid_lod1" ]
+        },
+        "mind": {
+          "type": "external_controlled",
+          "channels": ["motor_intent", "sensory_feedback", "cognitive_state"]
+        },
+        "identity": {
+          "identity_source": "IPL",
+          "allow_persistence": true
+        }
+      }
+    }
+  ],
+
+  "rules": {
+    "physics": {
+      "gravity": [0, -9.81, 0],
+      "solver": "position_based_dynamics",
+      "max_iterations": 8
+    },
+    "interactions": [
+      {
+        "id": "basic_collision",
+        "type": "collision",
+        "effect": "resolve_physics"
+      }
+    ]
+  }
+}
