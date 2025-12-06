@@ -805,7 +805,7 @@ export class CoreRealityKernel {
   // Perception
   // ---------------------------
 
-  public getPerceptualFrame(entityId: EntityId, radius: number = 50): PerceptualFrame | null {
+  public getPerceptualFrame(entityId: EntityId, radius: number = 200): PerceptualFrame | null {
     const transform = this.world.components.transform.get(entityId);
     const body = this.world.components.physics_body.get(entityId);
     if (!transform || !body) return null;
