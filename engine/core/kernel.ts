@@ -4,6 +4,20 @@ import fs from "fs";
 import path from "path";
 
 // ---------------------------
+// Constants for foam grid
+// ---------------------------
+
+// Foam covers a square region around origin in X/Z:
+// [-FOAM_HALF_EXTENT, +FOAM_HALF_EXTENT] in meters
+const FOAM_HALF_EXTENT = 200; // meters
+const FOAM_CELL_SIZE = 2;     // meters per cell
+const FOAM_DIM = Math.floor((FOAM_HALF_EXTENT * 2) / FOAM_CELL_SIZE); // 200x200
+
+// Diffusion/decay parameters
+const FOAM_DIFFUSION = 0.8;
+const FOAM_DECAY = 0.5;
+
+// ---------------------------
 // Types (aligned with RDL v0.1)
 // ---------------------------
 
@@ -56,7 +70,7 @@ interface InteractionRule {
 
 interface EntityArchetype {
   id: string;
-  components: any; // refine later
+  components: any;
 }
 
 interface RDLCore {
@@ -117,16 +131,36 @@ interface Components {
   identity: Map<EntityId, Identity>;
 }
 
+// ---------------------------
+// Foam grid
+// ---------------------------
+
+interface FoamGrid {
+  width: number;
+  height: number;
+  cellSize: number;
+  values: Float32Array;
+  scratch: Float32Array;
+}
+
+interface FoamPatch {
+  width: number;
+  height: number;
+  cellSize: number;
+  values: number[][]; // [row][col]
+}
+
+// ---------------------------
+// World & perception
+// ---------------------------
+
 interface WorldState {
   tick: number;
   timeSeconds: number;
   universe: UniverseDef;
   components: Components;
+  foam: FoamGrid;
 }
-
-// ---------------------------
-// Control & Perception
-// ---------------------------
 
 interface InputState {
   move: Vec3;
@@ -147,6 +181,7 @@ interface PerceptualFrame {
     velocity: Vec3;
   };
   nearbyEntities: PerceivedEntity[];
+  foamPatch?: FoamPatch;
 }
 
 // ---------------------------
@@ -194,6 +229,20 @@ export class CoreRealityKernel {
     }
   }
 
+  private createFoamGrid(): FoamGrid {
+    const width = FOAM_DIM;
+    const height = FOAM_DIM;
+    const cellSize = FOAM_CELL_SIZE;
+    const size = width * height;
+    return {
+      width,
+      height,
+      cellSize,
+      values: new Float32Array(size),
+      scratch: new Float32Array(size)
+    };
+  }
+
   private initWorld(universe: UniverseDef): WorldState {
     return {
       tick: 0,
@@ -205,7 +254,8 @@ export class CoreRealityKernel {
         appearance: new Map(),
         mind: new Map(),
         identity: new Map()
-      }
+      },
+      foam: this.createFoamGrid()
     };
   }
 
@@ -311,6 +361,134 @@ export class CoreRealityKernel {
     return this.world;
   }
 
+  // ---------------------------
+  // Foam helpers
+  // ---------------------------
+
+  private worldToFoamIndices(position: Vec3): [number, number] | null {
+    const x = position[0];
+    const z = position[2];
+
+    const minX = -FOAM_HALF_EXTENT;
+    const minZ = -FOAM_HALF_EXTENT;
+
+    const fx = (x - minX) / FOAM_CELL_SIZE;
+    const fz = (z - minZ) / FOAM_CELL_SIZE;
+
+    const ix = Math.floor(fx);
+    const iz = Math.floor(fz);
+
+    if (
+      ix < 0 ||
+      iz < 0 ||
+      ix >= this.world.foam.width ||
+      iz >= this.world.foam.height
+    ) {
+      return null;
+    }
+
+    return [ix, iz];
+  }
+
+  private addFoamSourceAt(position: Vec3, amount: number) {
+    const idx = this.worldToFoamIndices(position);
+    if (!idx) return;
+    const [ix, iz] = idx;
+    const grid = this.world.foam;
+    const index = iz * grid.width + ix;
+    grid.values[index] += amount;
+  }
+
+  private stepFoam(dt: number) {
+    const grid = this.world.foam;
+    const w = grid.width;
+    const h = grid.height;
+    const values = grid.values;
+    const scratch = grid.scratch;
+
+    // Interior points diffusion
+    for (let z = 1; z < h - 1; z++) {
+      for (let x = 1; x < w - 1; x++) {
+        const idx = z * w + x;
+        const center = values[idx];
+        const left = values[idx - 1];
+        const right = values[idx + 1];
+        const up = values[idx - w];
+        const down = values[idx + w];
+
+        const laplacian = left + right + up + down - 4 * center;
+        let next = center + FOAM_DIFFUSION * laplacian * dt;
+        scratch[idx] = next;
+      }
+    }
+
+    // Copy borders without diffusion (simple)
+    for (let x = 0; x < w; x++) {
+      const topIdx = x;
+      const bottomIdx = (h - 1) * w + x;
+      scratch[topIdx] = values[topIdx];
+      scratch[bottomIdx] = values[bottomIdx];
+    }
+    for (let z = 0; z < h; z++) {
+      const leftIdx = z * w;
+      const rightIdx = z * w + (w - 1);
+      scratch[leftIdx] = values[leftIdx];
+      scratch[rightIdx] = values[rightIdx];
+    }
+
+    // Decay + clamp ≥ 0
+    const decayFactor = Math.max(0, 1 - FOAM_DECAY * dt);
+    for (let i = 0; i < w * h; i++) {
+      let v = scratch[i] * decayFactor;
+      if (v < 0) v = 0;
+      values[i] = v;
+    }
+  }
+
+  private buildFoamPatchAround(position: Vec3, patchSize: number = 31): FoamPatch | undefined {
+    const centerIdx = this.worldToFoamIndices(position);
+    if (!centerIdx) return undefined;
+
+    const grid = this.world.foam;
+    const [cx, cz] = centerIdx;
+
+    const size = Math.min(patchSize, Math.min(grid.width, grid.height));
+    const half = Math.floor(size / 2);
+
+    const values2D: number[][] = [];
+
+    for (let dz = -half; dz <= half; dz++) {
+      const row: number[] = [];
+      for (let dx = -half; dx <= half; dx++) {
+        const gx = cx + dx;
+        const gz = cz + dz;
+        let v = 0;
+        if (
+          gx >= 0 &&
+          gz >= 0 &&
+          gx < grid.width &&
+          gz < grid.height
+        ) {
+          const idx = gz * grid.width + gx;
+          v = grid.values[idx];
+        }
+        row.push(v);
+      }
+      values2D.push(row);
+    }
+
+    return {
+      width: values2D[0]?.length ?? 0,
+      height: values2D.length,
+      cellSize: grid.cellSize,
+      values: values2D
+    };
+  }
+
+  // ---------------------------
+  // Perception
+  // ---------------------------
+
   public getPerceptualFrame(entityId: EntityId, radius: number = 50): PerceptualFrame | null {
     const transform = this.world.components.transform.get(entityId);
     const body = this.world.components.physics_body.get(entityId);
@@ -337,6 +515,8 @@ export class CoreRealityKernel {
       }
     }
 
+    const foamPatch = this.buildFoamPatchAround(position, 31);
+
     return {
       tick: this.world.tick,
       timeSeconds: this.world.timeSeconds,
@@ -345,7 +525,8 @@ export class CoreRealityKernel {
         position: [...position] as Vec3,
         velocity: [...velocity] as Vec3
       },
-      nearbyEntities
+      nearbyEntities,
+      foamPatch
     };
   }
 
@@ -386,6 +567,7 @@ export class CoreRealityKernel {
 
     this.updateMinds(dt);
     this.updatePhysics(dt);
+    this.updateFoam(dt);
     this.resolveInteractions();
     this.emitTickSummary();
   }
@@ -397,7 +579,7 @@ export class CoreRealityKernel {
   private updateMinds(dt: number) {
     const moveSpeed = 5; // m/s
 
-    // External controlled entities: same as before
+    // External controlled entities
     for (const entityId of this.controlledEntities) {
       const input = this.controlInputs.get(entityId);
       if (!input) continue;
@@ -406,7 +588,6 @@ export class CoreRealityKernel {
       if (!body) continue;
 
       const move = input.move;
-
       const mx = move[0];
       const mz = move[2];
       const mag = Math.sqrt(mx * mx + mz * mz);
@@ -433,16 +614,15 @@ export class CoreRealityKernel {
 
       state.timeToChange -= dt;
       if (state.timeToChange <= 0) {
-        // Choose a new random direction (or stand still sometimes)
         if (Math.random() < 0.2) {
-          state.move = [0, 0, 0]; // pause sometimes
+          state.move = [0, 0, 0];
         } else {
           const angle = Math.random() * Math.PI * 2;
           const mx = Math.cos(angle);
           const mz = Math.sin(angle);
           state.move = [mx, 0, mz];
         }
-        state.timeToChange = 1 + Math.random() * 3; // 1–4 seconds
+        state.timeToChange = 1 + Math.random() * 3;
       }
 
       const mx = state.move[0];
@@ -455,7 +635,7 @@ export class CoreRealityKernel {
       if (mag > 0.0001) {
         const nx = mx / mag;
         const nz = mz / mag;
-        vx = nx * moveSpeed * 0.7; // slightly slower than players
+        vx = nx * moveSpeed * 0.7;
         vz = nz * moveSpeed * 0.7;
       } else {
         vx *= 0.8;
@@ -501,8 +681,20 @@ export class CoreRealityKernel {
     }
   }
 
+  private updateFoam(dt: number) {
+    // Deposit from all entities with a mind (agents)
+    for (const [entityId, _mind] of this.world.components.mind.entries()) {
+      const transform = this.world.components.transform.get(entityId);
+      if (!transform) continue;
+      // Amount scales with dt; tweak 2.0 for stronger trails
+      this.addFoamSourceAt(transform.position, 2.0 * dt);
+    }
+    // Diffuse + decay
+    this.stepFoam(dt);
+  }
+
   private resolveInteractions() {
-    // Placeholder for collisions & rule-based interactions
+    // Placeholder
   }
 
   private emitTickSummary() {
