@@ -143,6 +143,8 @@
   // ---------------------------
   // Three.js scene setup
   // ---------------------------
+  const WORLD_SCALE = 1; // 1 scene unit = 1 meter in the sim
+
 
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
   renderer.setPixelRatio(window.devicePixelRatio || 1);
@@ -405,87 +407,93 @@
   // ---------------------------
   // Animation loop
   // ---------------------------
+let cameraTarget = new THREE.Vector3(0, 0, 0);
 
-  let cameraTarget = new THREE.Vector3(0, 0, 0);
+function animate() {
+  requestAnimationFrame(animate);
 
-  function animate() {
-    requestAnimationFrame(animate);
+  if (lastFrame) {
+    const {
+      self,
+      nearbyEntities,
+      resonance,
+      graphSummary,
+      narrative,
+      worldMood
+    } = lastFrame;
 
-    if (lastFrame) {
-      const {
-        self,
-        nearbyEntities,
-        resonance,
-        graphSummary,
-        narrative,
-        worldMood
-      } = lastFrame;
+    // World-space position of the player
+    const sx = self.position[0] * WORLD_SCALE;
+    const sz = self.position[2] * WORLD_SCALE;
 
-      // Self stays at origin in view space
-      selfGroup.position.set(0, 0, 0);
+    // Place the avatar at its world position
+    selfGroup.position.set(sx, 0, sz);
 
-      // Update halo based on local resonance
-      const r = resonance ? resonance.local : 0;
-      const alpha = Math.max(0, Math.min(0.8, r * 0.15));
-      halo.material.opacity = alpha;
-      const scale = 1 + Math.min(2.5, r * 0.3);
-      halo.scale.set(scale, scale, scale);
+    // Update halo based on local resonance
+    const r = resonance ? resonance.local : 0;
+    const alpha = Math.max(0, Math.min(0.8, r * 0.15));
+    halo.material.opacity = alpha;
+    const haloScale = 1 + Math.min(2.5, r * 0.3);
+    halo.scale.set(haloScale, haloScale, haloScale);
 
-      // Update other entities relative to self
-      const seenIds = new Set();
-      if (Array.isArray(nearbyEntities)) {
-        for (const ent of nearbyEntities) {
-          const id = ent.id;
-          seenIds.add(id);
-          let mesh = entityMeshes.get(id);
-          if (!mesh) {
-            mesh = new THREE.Mesh(otherGeo, otherMat.clone());
-            mesh.position.y = 1.0;
-            scene.add(mesh);
-            entityMeshes.set(id, mesh);
-          }
-          const dx = ent.relativePosition[0];
-          const dz = ent.relativePosition[2];
-          mesh.position.x = dx;
-          mesh.position.z = dz;
+    // Update other entities at their world positions
+    const seenIds = new Set();
+    if (Array.isArray(nearbyEntities)) {
+      for (const ent of nearbyEntities) {
+        const id = ent.id;
+        seenIds.add(id);
+        let mesh = entityMeshes.get(id);
+        if (!mesh) {
+          mesh = new THREE.Mesh(otherGeo, otherMat.clone());
+          mesh.position.y = 1.0;
+          scene.add(mesh);
+          entityMeshes.set(id, mesh);
         }
+
+        // relative position from the frame
+        const dx = ent.relativePosition[0] * WORLD_SCALE;
+        const dz = ent.relativePosition[2] * WORLD_SCALE;
+
+        // world position = self world pos + relative offset
+        mesh.position.x = sx + dx;
+        mesh.position.z = sz + dz;
       }
-
-      // Hide entities that are not currently in perception
-      for (const [id, mesh] of entityMeshes.entries()) {
-        if (!seenIds.has(id)) {
-          mesh.visible = false;
-        } else {
-          mesh.visible = true;
-        }
-      }
-
-      // Smooth camera to hover over self
-      const desiredCamPos = new THREE.Vector3(0, 30, 30);
-      camera.position.lerp(desiredCamPos, 0.05);
-      cameraTarget.lerp(new THREE.Vector3(0, 1.5, 0), 0.1);
-      camera.lookAt(cameraTarget);
-
-      // HUD text
-      tickEl.textContent =
-        "t = " +
-        lastFrame.timeSeconds.toFixed(2) +
-        " s · tick = " +
-        lastFrame.tick;
-
-      const moodText = self.mood ? `mood: ${self.mood}` : "mood: neutral";
-      moodEl.textContent = moodText;
-
-      const wm = worldMood || "mixed / unknown";
-      worldMoodEl.textContent = "world mood: " + wm;
-
-      setResonanceHUD(resonance);
-      setGraphSummaryHUD(graphSummary);
-      setNarrativeHUD(narrative);
     }
 
-    renderer.render(scene, camera);
+    // Hide entities that are not currently in perception
+    for (const [id, mesh] of entityMeshes.entries()) {
+      mesh.visible = seenIds.has(id);
+    }
+
+    // Smooth camera to hover *over the player*
+    const desiredCamPos = new THREE.Vector3(sx, 30, sz + 30);
+    camera.position.lerp(desiredCamPos, 0.05);
+
+    const desiredTarget = new THREE.Vector3(sx, 1.5, sz);
+    cameraTarget.lerp(desiredTarget, 0.1);
+    camera.lookAt(cameraTarget);
+
+    // HUD text
+    tickEl.textContent =
+      "t = " +
+      lastFrame.timeSeconds.toFixed(2) +
+      " s · tick = " +
+      lastFrame.tick;
+
+    const moodText = self.mood ? `mood: ${self.mood}` : "mood: neutral";
+    moodEl.textContent = moodText;
+
+    const wm = worldMood || "mixed / unknown";
+    worldMoodEl.textContent = "world mood: " + wm;
+
+    setResonanceHUD(resonance);
+    setGraphSummaryHUD(graphSummary);
+    setNarrativeHUD(narrative);
   }
+
+  renderer.render(scene, camera);
+}
+
 
   animate();
 </script>
