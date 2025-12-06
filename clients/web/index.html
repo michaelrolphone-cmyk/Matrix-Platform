@@ -110,13 +110,35 @@
       d: false
     };
 
+    const conceptLabels = {
+      "1": "curiosity",
+      "2": "danger",
+      "3": "calm"
+    };
+    
     window.addEventListener("keydown", (e) => {
       const k = e.key.toLowerCase();
+    
+      // Movement keys
       if (k in keys) {
         keys[k] = true;
         e.preventDefault();
+        return;
+      }
+    
+      // Concept injection keys (1,2,3)
+      if (conceptLabels[e.key] && socket && socket.readyState === WebSocket.OPEN) {
+        socket.send(
+          JSON.stringify({
+            type: "concept",
+            label: conceptLabels[e.key]
+          })
+        );
+        e.preventDefault();
+        return;
       }
     });
+
 
     window.addEventListener("keyup", (e) => {
       const k = e.key.toLowerCase();
@@ -172,7 +194,8 @@ function render() {
     return;
   }
 
-  const { self, nearbyEntities, foamPatch } = lastFrame;
+  const { self, nearbyEntities, foamPatch, concepts } = lastFrame;
+
 
   const cx = canvas.width / 2;
   const cy = canvas.height / 2;
@@ -251,6 +274,26 @@ function render() {
       ctx.fill();
     }
   }
+
+    // ---- Thought inspector ----
+  if (Array.isArray(concepts) && concepts.length > 0) {
+    ctx.fillStyle = "#0ff";
+    ctx.font = "12px system-ui";
+    ctx.fillText("Thoughts (nearby concepts):", 20, canvas.height - 90);
+
+    let y = canvas.height - 75;
+    const maxShown = 4;
+    for (let i = 0; i < Math.min(concepts.length, maxShown); i++) {
+      const c = concepts[i];
+      ctx.fillText(
+        `${c.label}: ${c.strength.toFixed(2)}`,
+        20,
+        y
+      );
+      y += 14;
+    }
+  }
+
 
   // ---- HUD ----
   ctx.fillStyle = "#ccc";
