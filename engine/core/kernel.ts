@@ -221,14 +221,17 @@ interface PerceivedEntity {
   distance: number;
 }
 
+interface FrameSelfState {
+  id: EntityId;
+  position: Vec3;
+  velocity: Vec3;
+  mood?: string;
+}
+
 interface PerceptualFrame {
   tick: number;
   timeSeconds: number;
-  self: {
-    id: EntityId;
-    position: Vec3;
-    velocity: Vec3;
-  };
+  self: FrameSelfState;
   nearbyEntities: PerceivedEntity[];
   foamPatch?: FoamPatch;
   concepts?: PerceivedConcept[];
@@ -237,7 +240,10 @@ interface PerceptualFrame {
     concepts: ConceptSummary[];
     edges: EdgeSummary[];
   };
+  narrative?: string[];
+  worldMood?: string;
 }
+
 
 // ---------------------------
 // AI State
@@ -520,6 +526,86 @@ export class CoreRealityKernel {
     };
   }
 
+    private classifyWorldMood(summary: { concepts: ConceptSummary[]; edges: EdgeSummary[] }): string {
+    const byLabel: { [label: string]: number } = {};
+    for (const c of summary.concepts) {
+      byLabel[c.label] = (byLabel[c.label] || 0) + c.weight;
+    }
+
+    const curiosity = byLabel["curiosity"] || 0;
+    const danger = byLabel["danger"] || 0;
+    const calm = byLabel["calm"] || 0;
+    const total = curiosity + danger + calm;
+
+    if (total < 1) return "empty";
+
+    if (danger > curiosity && danger > calm) {
+      if (curiosity > 0.3 * danger) return "tense curiosity";
+      return "anxious / threatened";
+    }
+
+    if (curiosity >= danger && curiosity >= calm) {
+      if (danger > 0.5 * curiosity) return "exploratory but wary";
+      return "curious / exploratory";
+    }
+
+    if (calm >= danger && calm > curiosity) {
+      if (danger > 0.3 * calm) return "calm with distant tensions";
+      return "calm / settled";
+    }
+
+    return "mixed / shifting";
+  }
+
+  private buildNarrativeLines(
+    selfMood: string,
+    resonance: ResonanceState | undefined,
+    graphSummary: { concepts: ConceptSummary[]; edges: EdgeSummary[] } | undefined
+  ): string[] {
+    const lines: string[] = [];
+
+    if (selfMood && selfMood !== "neutral") {
+      lines.push(`You feel ${selfMood}.`);
+    }
+
+    if (resonance && resonance.local > 0.1) {
+      const labels = resonance.labels || {};
+      const parts: string[] = [];
+      const top = Object.entries(labels)
+        .filter(([_, v]) => v > 0.01)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3);
+      for (const [label] of top) {
+        parts.push(label);
+      }
+      if (parts.length > 0) {
+        lines.push(`Local field is saturated with ${parts.join(", ")}.`);
+      }
+    }
+
+    if (graphSummary) {
+      const mood = this.classifyWorldMood(graphSummary);
+      const strongest = graphSummary.concepts[0]?.label;
+      const second = graphSummary.concepts[1]?.label;
+
+      if (mood !== "empty") {
+        if (strongest && second) {
+          lines.push(
+            `The world remembers mostly ${strongest}, intertwined with ${second}.`
+          );
+        } else if (strongest) {
+          lines.push(`The world remembers mostly ${strongest}.`);
+        } else {
+          lines.push(`The world mood is ${mood}.`);
+        }
+      }
+    }
+
+    // Keep it short
+    return lines.slice(0, 3);
+  }
+
+
   // ---------------------------
   // Foam helpers
   // ---------------------------
@@ -685,6 +771,36 @@ export class CoreRealityKernel {
     return { local: sum, labels };
   }
 
+  private classifyMood(resonance: ResonanceState): string {
+    const labels = resonance.labels || {};
+    const curiosity = labels["curiosity"] || 0;
+    const danger = labels["danger"] || 0;
+    const calm = labels["calm"] || 0;
+
+    // Dominant label decides base mood
+    const maxVal = Math.max(curiosity, danger, calm, resonance.local);
+
+    if (maxVal < 0.01) return "neutral";
+
+    if (danger === maxVal && danger > curiosity && danger > calm) {
+      if (danger > 2 * calm) return "afraid";
+      return "uneasy";
+    }
+
+    if (curiosity === maxVal && curiosity > danger && curiosity > calm) {
+      if (curiosity > 2 * calm) return "hyper-curious";
+      return "curious";
+    }
+
+    if (calm === maxVal && calm > danger && calm >= curiosity) {
+      if (danger < calm * 0.5) return "calm";
+      return "alert but calm";
+    }
+
+    return "mixed";
+  }
+
+
   // ---------------------------
   // Perception
   // ---------------------------
@@ -714,11 +830,13 @@ export class CoreRealityKernel {
         });
       }
     }
-
     const foamPatch = this.buildFoamPatchAround(position, 31);
     const concepts = this.buildConceptsAround(position, 60);
     const resonance = this.buildLocalResonance(position);
     const graphSummary = this.buildGlobalGraphSummary();
+    const selfMood = this.classifyMood(resonance);
+    const worldMood = this.classifyWorldMood(graphSummary);
+    const narrative = this.buildNarrativeLines(selfMood, resonance, graphSummary);
 
     return {
       tick: this.world.tick,
@@ -726,14 +844,18 @@ export class CoreRealityKernel {
       self: {
         id: entityId,
         position: [...position] as Vec3,
-        velocity: [...velocity] as Vec3
+        velocity: [...velocity] as Vec3,
+        mood: selfMood
       },
       nearbyEntities,
       foamPatch,
       concepts,
       resonance,
-      graphSummary
+      graphSummary,
+      narrative,
+      worldMood
     };
+
   }
 
   // ---------------------------
