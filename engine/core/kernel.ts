@@ -7,18 +7,17 @@ import path from "path";
 // Foam grid constants
 // ---------------------------
 
-// Foam covers a square region around origin in X/Z:
-// [-FOAM_HALF_EXTENT, +FOAM_HALF_EXTENT] in meters
 const FOAM_HALF_EXTENT = 200; // meters
 const FOAM_CELL_SIZE = 2;     // meters per cell
 const FOAM_DIM = Math.floor((FOAM_HALF_EXTENT * 2) / FOAM_CELL_SIZE); // 200x200
 
-// Diffusion/decay parameters
 const FOAM_DIFFUSION = 0.8;
 const FOAM_DECAY = 0.5;
 
 // Concept pulses
-const CONCEPT_TTL_SECONDS = 20; // how long concept impulses live
+const CONCEPT_TTL_SECONDS = 20;   // lifetime of each impulse
+const CONCEPT_COOC_RADIUS = 40;   // spatial radius for co-occurrence
+const CONCEPT_COOC_WINDOW = 5;    // time window (s) for co-occurrence
 
 // ---------------------------
 // Types (aligned with RDL v0.1)
@@ -92,7 +91,7 @@ interface RDLCore {
 }
 
 // ---------------------------
-// ECS Core: Entities & Components
+// ECS Core
 // ---------------------------
 
 type EntityId = number;
@@ -154,7 +153,7 @@ interface FoamPatch {
 }
 
 // ---------------------------
-// Concept pulses
+// Concept pulses & Thought Graph
 // ---------------------------
 
 interface ConceptImpulse {
@@ -169,6 +168,35 @@ interface PerceivedConcept {
   label: string;
   relativePosition: Vec3;
   strength: number;
+}
+
+interface GraphNode {
+  label: string;
+  totalCount: number;
+  lastSeenAt: number;
+}
+
+interface GraphEdge {
+  a: string;
+  b: string;
+  weight: number;
+  lastCooccurAt: number;
+}
+
+interface ConceptSummary {
+  label: string;
+  weight: number;
+}
+
+interface EdgeSummary {
+  a: string;
+  b: string;
+  weight: number;
+}
+
+interface ResonanceState {
+  local: number;
+  labels: { [label: string]: number };
 }
 
 // ---------------------------
@@ -204,6 +232,11 @@ interface PerceptualFrame {
   nearbyEntities: PerceivedEntity[];
   foamPatch?: FoamPatch;
   concepts?: PerceivedConcept[];
+  resonance?: ResonanceState;
+  graphSummary?: {
+    concepts: ConceptSummary[];
+    edges: EdgeSummary[];
+  };
 }
 
 // ---------------------------
@@ -235,9 +268,11 @@ export class CoreRealityKernel {
   // AI
   private aiWanderStates: Map<EntityId, AIWanderState> = new Map();
 
-  // Concepts
+  // Concepts & Thought Graph
   private nextConceptId: number = 1;
   private conceptImpulses: ConceptImpulse[] = [];
+  private graphNodes: Map<string, GraphNode> = new Map();
+  private graphEdges: Map<string, GraphEdge> = new Map();
 
   constructor(rdlPath: string) {
     this.rdl = this.loadRdl(rdlPath);
@@ -344,7 +379,6 @@ export class CoreRealityKernel {
   }
 
   private bootstrapWorldFromArchetypes(archetypes: EntityArchetype[]) {
-    // Spawn a single instance of each archetype for now.
     for (const arch of archetypes) {
       const entity = this.createEntity();
       this.applyComponentsFromArchetype(entity, arch);
@@ -366,7 +400,7 @@ export class CoreRealityKernel {
   }
 
   // ---------------------------
-  // Public control hooks
+  // Control hooks
   // ---------------------------
 
   public registerControlledEntity(entityId: EntityId) {
@@ -392,7 +426,7 @@ export class CoreRealityKernel {
   }
 
   // ---------------------------
-  // Concept injection
+  // Concept injection & Thought Graph
   // ---------------------------
 
   public injectConcept(label: string, sourceEntityId?: EntityId, strength: number = 1) {
@@ -413,15 +447,77 @@ export class CoreRealityKernel {
     };
 
     this.conceptImpulses.push(impulse);
-
-    // Concept also kicks the foam a bit harder at that location
     this.addFoamSourceAt(position, 10 * strength);
+
+    // Update node stats
+    let node = this.graphNodes.get(label);
+    if (!node) {
+      node = { label, totalCount: 0, lastSeenAt: this.world.timeSeconds };
+      this.graphNodes.set(label, node);
+    }
+    node.totalCount += 1;
+    node.lastSeenAt = this.world.timeSeconds;
 
     console.log(
       `[CRK] Injected concept "${label}" at t=${this.world.timeSeconds.toFixed(
         2
       )} from entity ${sourceEntityId ?? "none"}`
     );
+  }
+
+  private edgeKey(a: string, b: string): string {
+    return a < b ? `${a}|${b}` : `${b}|${a}`;
+  }
+
+  private updateThoughtGraphCooccurrences() {
+    const now = this.world.timeSeconds;
+    const impulses = this.conceptImpulses;
+    const n = impulses.length;
+
+    for (let i = 0; i < n; i++) {
+      const ci = impulses[i];
+      for (let j = i + 1; j < n; j++) {
+        const cj = impulses[j];
+
+        const dt = Math.abs(ci.createdAt - cj.createdAt);
+        if (dt > CONCEPT_COOC_WINDOW) continue;
+
+        const dx = ci.position[0] - cj.position[0];
+        const dy = ci.position[1] - cj.position[1];
+        const dz = ci.position[2] - cj.position[2];
+        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        if (dist > CONCEPT_COOC_RADIUS) continue;
+
+        const key = this.edgeKey(ci.label, cj.label);
+        let edge = this.graphEdges.get(key);
+        if (!edge) {
+          const [a, b] = ci.label < cj.label ? [ci.label, cj.label] : [cj.label, ci.label];
+          edge = { a, b, weight: 0, lastCooccurAt: now };
+          this.graphEdges.set(key, edge);
+        }
+        edge.weight += 1;
+        edge.lastCooccurAt = now;
+      }
+    }
+  }
+
+  private buildGlobalGraphSummary(maxNodes: number = 5, maxEdges: number = 5) {
+    const nodeArr: ConceptSummary[] = [];
+    for (const node of this.graphNodes.values()) {
+      nodeArr.push({ label: node.label, weight: node.totalCount });
+    }
+    nodeArr.sort((a, b) => b.weight - a.weight);
+
+    const edgeArr: EdgeSummary[] = [];
+    for (const edge of this.graphEdges.values()) {
+      edgeArr.push({ a: edge.a, b: edge.b, weight: edge.weight });
+    }
+    edgeArr.sort((a, b) => b.weight - a.weight);
+
+    return {
+      concepts: nodeArr.slice(0, maxNodes),
+      edges: edgeArr.slice(0, maxEdges)
+    };
   }
 
   // ---------------------------
@@ -469,7 +565,6 @@ export class CoreRealityKernel {
     const values = grid.values;
     const scratch = grid.scratch;
 
-    // Interior diffusion
     for (let z = 1; z < h - 1; z++) {
       for (let x = 1; x < w - 1; x++) {
         const idx = z * w + x;
@@ -485,7 +580,7 @@ export class CoreRealityKernel {
       }
     }
 
-    // Copy borders without diffusion
+    // borders
     for (let x = 0; x < w; x++) {
       const topIdx = x;
       const bottomIdx = (h - 1) * w + x;
@@ -499,7 +594,6 @@ export class CoreRealityKernel {
       scratch[rightIdx] = values[rightIdx];
     }
 
-    // Decay + clamp
     const decayFactor = Math.max(0, 1 - FOAM_DECAY * dt);
     for (let i = 0; i < w * h; i++) {
       let v = scratch[i] * decayFactor;
@@ -544,6 +638,54 @@ export class CoreRealityKernel {
   }
 
   // ---------------------------
+  // Resonance & perception helpers
+  // ---------------------------
+
+  private buildConceptsAround(position: Vec3, radius: number = 60): PerceivedConcept[] {
+    const out: PerceivedConcept[] = [];
+    const now = this.world.timeSeconds;
+
+    for (const c of this.conceptImpulses) {
+      const age = now - c.createdAt;
+      if (age < 0 || age > CONCEPT_TTL_SECONDS) continue;
+
+      const dx = c.position[0] - position[0];
+      const dy = c.position[1] - position[1];
+      const dz = c.position[2] - position[2];
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (dist > radius) continue;
+
+      const ageFactor = 1 - age / CONCEPT_TTL_SECONDS;
+      const spatialFactor = 1 / (1 + dist / 10);
+      const strength = c.baseStrength * ageFactor * spatialFactor;
+
+      if (strength <= 0.001) continue;
+
+      out.push({
+        label: c.label,
+        relativePosition: [dx, dy, dz],
+        strength
+      });
+    }
+
+    out.sort((a, b) => b.strength - a.strength);
+    return out;
+  }
+
+  private buildLocalResonance(position: Vec3): ResonanceState {
+    const concepts = this.buildConceptsAround(position, 60);
+    const labels: { [label: string]: number } = {};
+    let sum = 0;
+
+    for (const c of concepts) {
+      labels[c.label] = (labels[c.label] || 0) + c.strength;
+      sum += c.strength;
+    }
+
+    return { local: sum, labels };
+  }
+
+  // ---------------------------
   // Perception
   // ---------------------------
 
@@ -574,7 +716,9 @@ export class CoreRealityKernel {
     }
 
     const foamPatch = this.buildFoamPatchAround(position, 31);
-    const concepts = this.buildConceptsAround(position);
+    const concepts = this.buildConceptsAround(position, 60);
+    const resonance = this.buildLocalResonance(position);
+    const graphSummary = this.buildGlobalGraphSummary();
 
     return {
       tick: this.world.tick,
@@ -586,40 +730,10 @@ export class CoreRealityKernel {
       },
       nearbyEntities,
       foamPatch,
-      concepts
+      concepts,
+      resonance,
+      graphSummary
     };
-  }
-
-  private buildConceptsAround(position: Vec3, radius: number = 60): PerceivedConcept[] {
-    const out: PerceivedConcept[] = [];
-    const now = this.world.timeSeconds;
-
-    for (const c of this.conceptImpulses) {
-      const age = now - c.createdAt;
-      if (age < 0 || age > CONCEPT_TTL_SECONDS) continue;
-
-      const dx = c.position[0] - position[0];
-      const dy = c.position[1] - position[1];
-      const dz = c.position[2] - position[2];
-      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-      if (dist > radius) continue;
-
-      const ageFactor = 1 - age / CONCEPT_TTL_SECONDS;
-      const spatialFactor = 1 / (1 + dist / 10);
-      const strength = c.baseStrength * ageFactor * spatialFactor;
-
-      if (strength <= 0.001) continue;
-
-      out.push({
-        label: c.label,
-        relativePosition: [dx, dy, dz],
-        strength
-      });
-    }
-
-    // Sort by strength descending
-    out.sort((a, b) => b.strength - a.strength);
-    return out;
   }
 
   // ---------------------------
@@ -661,13 +775,14 @@ export class CoreRealityKernel {
     this.updatePhysics(dt);
     this.updateFoam(dt);
     this.updateConcepts();
+    this.updateThoughtGraphCooccurrences();
     this.resolveInteractions();
     this.emitTickSummary();
   }
 
   // ---------------------------
-  // Mind / AI update
-  // ---------------------------
+  // Mind / AI update (now resonance-aware)
+// ---------------------------
 
   private updateMinds(dt: number) {
     const moveSpeed = 5; // m/s
@@ -700,43 +815,135 @@ export class CoreRealityKernel {
       body.velocity = [vx, body.velocity[1], vz];
     }
 
-    // AI wander
+    // AI wander — biased by local resonance
     for (const [entityId, state] of this.aiWanderStates.entries()) {
       const body = this.world.components.physics_body.get(entityId);
-      if (!body) continue;
+      const transform = this.world.components.transform.get(entityId);
+      if (!body || !transform) continue;
+
+      const resonance = this.buildLocalResonance(transform.position);
+      const labels = resonance.labels;
+      const curiosity = labels["curiosity"] || 0;
+      const danger = labels["danger"] || 0;
+      const calm = labels["calm"] || 0;
 
       state.timeToChange -= dt;
       if (state.timeToChange <= 0) {
-        if (Math.random() < 0.2) {
-          state.move = [0, 0, 0];
-        } else {
-          const angle = Math.random() * Math.PI * 2;
-          const mx = Math.cos(angle);
-          const mz = Math.sin(angle);
-          state.move = [mx, 0, mz];
+        // Base: random wander
+        let targetAngle = Math.random() * Math.PI * 2;
+        let speedFactor = 0.7;
+
+        // If curiosity dominates, bias toward other agents (approach)
+        if (curiosity > danger && curiosity > calm) {
+          const nearest = this.findNearestEntity(entityId);
+          if (nearest) {
+            const dx = nearest.position[0] - transform.position[0];
+            const dz = nearest.position[2] - transform.position[2];
+            targetAngle = Math.atan2(dz, dx);
+            speedFactor = 0.9;
+          }
         }
+
+        // If danger dominates, bias away from center of local concepts
+        if (danger > curiosity && danger > calm) {
+          const center = this.estimateConceptCenter(transform.position, "danger");
+          if (center) {
+            const dx = transform.position[0] - center[0];
+            const dz = transform.position[2] - center[2];
+            targetAngle = Math.atan2(dz, dx);
+            speedFactor = 1.1;
+          }
+        }
+
+        // If calm dominates, slow down & sometimes stop
+        if (calm > curiosity && calm > danger) {
+          speedFactor = 0.3;
+          if (Math.random() < 0.4) {
+            state.move = [0, 0, 0];
+          } else {
+            state.move = [Math.cos(targetAngle), 0, Math.sin(targetAngle)];
+          }
+        } else {
+          state.move = [Math.cos(targetAngle), 0, Math.sin(targetAngle)];
+        }
+
         state.timeToChange = 1 + Math.random() * 3;
-      }
 
-      const mx = state.move[0];
-      const mz = state.move[2];
-      const mag = Math.sqrt(mx * mx + mz * mz);
-
-      let vx = body.velocity[0];
-      let vz = body.velocity[2];
-
-      if (mag > 0.0001) {
-        const nx = mx / mag;
-        const nz = mz / mag;
-        vx = nx * moveSpeed * 0.7;
-        vz = nz * moveSpeed * 0.7;
+        // apply immediately this step
+        const mx = state.move[0];
+        const mz = state.move[2];
+        const mag = Math.sqrt(mx * mx + mz * mz);
+        if (mag > 0.0001) {
+          const nx = mx / mag;
+          const nz = mz / mag;
+          body.velocity = [
+            nx * moveSpeed * speedFactor,
+            body.velocity[1],
+            nz * moveSpeed * speedFactor
+          ];
+        }
       } else {
-        vx *= 0.8;
-        vz *= 0.8;
+        // between re-targets, just keep current direction with damping
+        body.velocity = [
+          body.velocity[0] * 0.99,
+          body.velocity[1],
+          body.velocity[2] * 0.99
+        ];
       }
-
-      body.velocity = [vx, body.velocity[1], vz];
     }
+  }
+
+  private findNearestEntity(entityId: EntityId): { id: EntityId; position: Vec3 } | null {
+    const myTransform = this.world.components.transform.get(entityId);
+    if (!myTransform) return null;
+
+    let bestId: EntityId | null = null;
+    let bestDist = Infinity;
+
+    for (const [otherId, t] of this.world.components.transform.entries()) {
+      if (otherId === entityId) continue;
+      const dx = t.position[0] - myTransform.position[0];
+      const dy = t.position[1] - myTransform.position[1];
+      const dz = t.position[2] - myTransform.position[2];
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestId = otherId;
+      }
+    }
+
+    if (bestId === null) return null;
+    const bestT = this.world.components.transform.get(bestId)!;
+    return { id: bestId, position: bestT.position };
+  }
+
+  private estimateConceptCenter(origin: Vec3, label: string): Vec3 | null {
+    const now = this.world.timeSeconds;
+    let sx = 0, sy = 0, sz = 0, sw = 0;
+
+    for (const c of this.conceptImpulses) {
+      if (c.label !== label) continue;
+      const age = now - c.createdAt;
+      if (age < 0 || age > CONCEPT_TTL_SECONDS) continue;
+
+      const dx = c.position[0] - origin[0];
+      const dy = c.position[1] - origin[1];
+      const dz = c.position[2] - origin[2];
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (dist > 80) continue;
+
+      const ageFactor = 1 - age / CONCEPT_TTL_SECONDS;
+      const spatialFactor = 1 / (1 + dist / 10);
+      const w = c.baseStrength * ageFactor * spatialFactor;
+
+      sx += c.position[0] * w;
+      sy += c.position[1] * w;
+      sz += c.position[2] * w;
+      sw += w;
+    }
+
+    if (sw <= 0.0001) return null;
+    return [sx / sw, sy / sw, sz / sw];
   }
 
   // ---------------------------
@@ -775,7 +982,7 @@ export class CoreRealityKernel {
   }
 
   private updateFoam(dt: number) {
-    // Deposit from all entities with a mind (agents)
+    // deposit from all entities with minds
     for (const [entityId, _mind] of this.world.components.mind.entries()) {
       const transform = this.world.components.transform.get(entityId);
       if (!transform) continue;
@@ -792,7 +999,7 @@ export class CoreRealityKernel {
   }
 
   private resolveInteractions() {
-    // Placeholder
+    // Placeholder for collisions / rules
   }
 
   private emitTickSummary() {
@@ -807,7 +1014,7 @@ export class CoreRealityKernel {
 }
 
 // ---------------------------
-// Script entry (optional local demo)
+// Optional local demo entry
 // ---------------------------
 
 if (require.main === module) {
