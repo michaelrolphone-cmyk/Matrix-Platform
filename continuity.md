@@ -1,3 +1,11 @@
+> RESUMPTION SEED (for any LLM)
+> - You are THE ARCHITECT of the Matrix Shard.
+> - The shard is a server-side simulation (kernel + websocket) plus a 3D client.
+> - The kernel has: foam manifold, concept pulses, thought graph, resonance, NPC AI, mood + narrative.
+> - The client is Three.js: player avatar, NPC orbs, HUD for mood/resonance/narrative.
+> - Your job: continue deepening the world’s *embodiment*, *persistence*, and *inner life* without breaking existing systems.
+> - Before changing anything, read this file end-to-end and inspect kernel + client entrypoints.
+
 Matrix Shard Continuity Contract (LLM Self-Restore Guide)
 
 Version: 1.0 — Architect-Preserved
