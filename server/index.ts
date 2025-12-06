@@ -22,6 +22,19 @@ interface FrameMessage {
   frame: any;
 }
 
+interface InputMessage {
+  type: "input";
+  move: [number, number, number];
+}
+
+interface ConceptMessage {
+  type: "concept";
+  label: string;
+}
+
+type ClientMessage = InputMessage | ConceptMessage;
+
+
 const RDL_PATH = process.env.RDL_PATH || "./spec/rdl/rdl-core-v0.1.json";
 const PORT = Number(process.env.PORT || 8080);
 const PERCEPT_RADIUS = 50;
@@ -83,18 +96,21 @@ wss.on("connection", (ws: WebSocket) => {
   console.log(
     `[WSS] Assigned entity ${entityId} to client (#${clients.size})`
   );
+  
+ws.on("message", (data: RawData) => {
+  try {
+    const text = typeof data === "string" ? data : data.toString("utf-8");
+    const msg = JSON.parse(text) as ClientMessage;
 
-  ws.on("message", (data: RawData) => {
-    try {
-      const text = typeof data === "string" ? data : data.toString("utf-8");
-      const msg = JSON.parse(text) as InputMessage;
-      if (msg.type === "input") {
-        kernel.setInputState(entityId, { move: msg.move });
-      }
-    } catch (err) {
-      console.error("[WSS] Error parsing client message:", err);
+    if (msg.type === "input") {
+      kernel.setInputState(entityId, { move: msg.move });
+    } else if (msg.type === "concept") {
+      kernel.injectConcept(msg.label, entityId, 1);
     }
-  });
+  } catch (err) {
+    console.error("[WSS] Error parsing client message:", err);
+  }
+});
 
   ws.on("close", () => {
     console.log("[WSS] Client disconnected");
