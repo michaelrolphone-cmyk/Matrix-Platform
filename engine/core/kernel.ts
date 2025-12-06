@@ -4,7 +4,7 @@ import fs from "fs";
 import path from "path";
 
 // ---------------------------
-// Constants for foam grid
+// Foam grid constants
 // ---------------------------
 
 // Foam covers a square region around origin in X/Z:
@@ -16,6 +16,9 @@ const FOAM_DIM = Math.floor((FOAM_HALF_EXTENT * 2) / FOAM_CELL_SIZE); // 200x200
 // Diffusion/decay parameters
 const FOAM_DIFFUSION = 0.8;
 const FOAM_DECAY = 0.5;
+
+// Concept pulses
+const CONCEPT_TTL_SECONDS = 20; // how long concept impulses live
 
 // ---------------------------
 // Types (aligned with RDL v0.1)
@@ -132,7 +135,7 @@ interface Components {
 }
 
 // ---------------------------
-// Foam grid
+// Foam grid structures
 // ---------------------------
 
 interface FoamGrid {
@@ -148,6 +151,24 @@ interface FoamPatch {
   height: number;
   cellSize: number;
   values: number[][]; // [row][col]
+}
+
+// ---------------------------
+// Concept pulses
+// ---------------------------
+
+interface ConceptImpulse {
+  id: number;
+  label: string;
+  position: Vec3;
+  createdAt: number;   // simulation timeSeconds
+  baseStrength: number;
+}
+
+interface PerceivedConcept {
+  label: string;
+  relativePosition: Vec3;
+  strength: number;
 }
 
 // ---------------------------
@@ -182,6 +203,7 @@ interface PerceptualFrame {
   };
   nearbyEntities: PerceivedEntity[];
   foamPatch?: FoamPatch;
+  concepts?: PerceivedConcept[];
 }
 
 // ---------------------------
@@ -203,11 +225,19 @@ export class CoreRealityKernel {
   private nextEntityId: EntityId = 1;
   private running: boolean = false;
 
+  // Control
   private controlInputs: Map<EntityId, InputState> = new Map();
   private controlledEntities: Set<EntityId> = new Set();
 
+  // Archetypes
   private archetypesById: Map<string, EntityArchetype> = new Map();
+
+  // AI
   private aiWanderStates: Map<EntityId, AIWanderState> = new Map();
+
+  // Concepts
+  private nextConceptId: number = 1;
+  private conceptImpulses: ConceptImpulse[] = [];
 
   constructor(rdlPath: string) {
     this.rdl = this.loadRdl(rdlPath);
@@ -362,6 +392,39 @@ export class CoreRealityKernel {
   }
 
   // ---------------------------
+  // Concept injection
+  // ---------------------------
+
+  public injectConcept(label: string, sourceEntityId?: EntityId, strength: number = 1) {
+    let position: Vec3 = [0, 0, 0];
+    if (sourceEntityId !== undefined) {
+      const t = this.world.components.transform.get(sourceEntityId);
+      if (t) {
+        position = [t.position[0], t.position[1], t.position[2]];
+      }
+    }
+
+    const impulse: ConceptImpulse = {
+      id: this.nextConceptId++,
+      label,
+      position,
+      createdAt: this.world.timeSeconds,
+      baseStrength: strength
+    };
+
+    this.conceptImpulses.push(impulse);
+
+    // Concept also kicks the foam a bit harder at that location
+    this.addFoamSourceAt(position, 10 * strength);
+
+    console.log(
+      `[CRK] Injected concept "${label}" at t=${this.world.timeSeconds.toFixed(
+        2
+      )} from entity ${sourceEntityId ?? "none"}`
+    );
+  }
+
+  // ---------------------------
   // Foam helpers
   // ---------------------------
 
@@ -406,7 +469,7 @@ export class CoreRealityKernel {
     const values = grid.values;
     const scratch = grid.scratch;
 
-    // Interior points diffusion
+    // Interior diffusion
     for (let z = 1; z < h - 1; z++) {
       for (let x = 1; x < w - 1; x++) {
         const idx = z * w + x;
@@ -422,7 +485,7 @@ export class CoreRealityKernel {
       }
     }
 
-    // Copy borders without diffusion (simple)
+    // Copy borders without diffusion
     for (let x = 0; x < w; x++) {
       const topIdx = x;
       const bottomIdx = (h - 1) * w + x;
@@ -436,7 +499,7 @@ export class CoreRealityKernel {
       scratch[rightIdx] = values[rightIdx];
     }
 
-    // Decay + clamp ≥ 0
+    // Decay + clamp
     const decayFactor = Math.max(0, 1 - FOAM_DECAY * dt);
     for (let i = 0; i < w * h; i++) {
       let v = scratch[i] * decayFactor;
@@ -463,12 +526,7 @@ export class CoreRealityKernel {
         const gx = cx + dx;
         const gz = cz + dz;
         let v = 0;
-        if (
-          gx >= 0 &&
-          gz >= 0 &&
-          gx < grid.width &&
-          gz < grid.height
-        ) {
+        if (gx >= 0 && gz >= 0 && gx < grid.width && gz < grid.height) {
           const idx = gz * grid.width + gx;
           v = grid.values[idx];
         }
@@ -516,6 +574,7 @@ export class CoreRealityKernel {
     }
 
     const foamPatch = this.buildFoamPatchAround(position, 31);
+    const concepts = this.buildConceptsAround(position);
 
     return {
       tick: this.world.tick,
@@ -526,8 +585,41 @@ export class CoreRealityKernel {
         velocity: [...velocity] as Vec3
       },
       nearbyEntities,
-      foamPatch
+      foamPatch,
+      concepts
     };
+  }
+
+  private buildConceptsAround(position: Vec3, radius: number = 60): PerceivedConcept[] {
+    const out: PerceivedConcept[] = [];
+    const now = this.world.timeSeconds;
+
+    for (const c of this.conceptImpulses) {
+      const age = now - c.createdAt;
+      if (age < 0 || age > CONCEPT_TTL_SECONDS) continue;
+
+      const dx = c.position[0] - position[0];
+      const dy = c.position[1] - position[1];
+      const dz = c.position[2] - position[2];
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (dist > radius) continue;
+
+      const ageFactor = 1 - age / CONCEPT_TTL_SECONDS;
+      const spatialFactor = 1 / (1 + dist / 10);
+      const strength = c.baseStrength * ageFactor * spatialFactor;
+
+      if (strength <= 0.001) continue;
+
+      out.push({
+        label: c.label,
+        relativePosition: [dx, dy, dz],
+        strength
+      });
+    }
+
+    // Sort by strength descending
+    out.sort((a, b) => b.strength - a.strength);
+    return out;
   }
 
   // ---------------------------
@@ -568,6 +660,7 @@ export class CoreRealityKernel {
     this.updateMinds(dt);
     this.updatePhysics(dt);
     this.updateFoam(dt);
+    this.updateConcepts();
     this.resolveInteractions();
     this.emitTickSummary();
   }
@@ -579,7 +672,7 @@ export class CoreRealityKernel {
   private updateMinds(dt: number) {
     const moveSpeed = 5; // m/s
 
-    // External controlled entities
+    // External controlled
     for (const entityId of this.controlledEntities) {
       const input = this.controlInputs.get(entityId);
       if (!input) continue;
@@ -607,7 +700,7 @@ export class CoreRealityKernel {
       body.velocity = [vx, body.velocity[1], vz];
     }
 
-    // AI wander entities
+    // AI wander
     for (const [entityId, state] of this.aiWanderStates.entries()) {
       const body = this.world.components.physics_body.get(entityId);
       if (!body) continue;
@@ -647,7 +740,7 @@ export class CoreRealityKernel {
   }
 
   // ---------------------------
-  // Physics
+  // Physics / Foam / Concepts
   // ---------------------------
 
   private updatePhysics(dt: number) {
@@ -686,11 +779,16 @@ export class CoreRealityKernel {
     for (const [entityId, _mind] of this.world.components.mind.entries()) {
       const transform = this.world.components.transform.get(entityId);
       if (!transform) continue;
-      // Amount scales with dt; tweak 2.0 for stronger trails
       this.addFoamSourceAt(transform.position, 2.0 * dt);
     }
-    // Diffuse + decay
     this.stepFoam(dt);
+  }
+
+  private updateConcepts() {
+    const now = this.world.timeSeconds;
+    this.conceptImpulses = this.conceptImpulses.filter(
+      c => now - c.createdAt < CONCEPT_TTL_SECONDS
+    );
   }
 
   private resolveInteractions() {
