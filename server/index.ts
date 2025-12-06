@@ -62,21 +62,18 @@ const server = http.createServer(app);
 
 const wss = new WebSocketServer({ server });
 const clients = new Map<WebSocket, ClientInfo>();
-
 wss.on("connection", (ws: WebSocket) => {
   console.log("[WSS] New client connection");
 
-  const world = kernel.getWorldState();
-  const allEntities = Array.from(world.components.transform.keys());
-
-  if (allEntities.length === 0) {
-    console.warn("[WSS] No entities available to assign to client");
+  let entityId: number;
+  try {
+    // Create a new body for this client
+    entityId = kernel.spawnEntityFromArchetype("human_agent");
+  } catch (err) {
+    console.error("[WSS] Failed to spawn human_agent for client:", err);
     ws.close();
     return;
   }
-
-  const assignedIndex = clients.size % allEntities.length;
-  const entityId = allEntities[assignedIndex];
 
   kernel.registerControlledEntity(entityId);
 
@@ -109,6 +106,7 @@ wss.on("connection", (ws: WebSocket) => {
     clients.delete(ws);
   });
 });
+
 
 setInterval(() => {
   for (const [ws, client] of clients.entries()) {
