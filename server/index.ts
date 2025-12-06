@@ -41,11 +41,15 @@ kernel.start();
 
 const app = express();
 
-// Serve static client from /clients/web
-const clientPath = path.resolve(__dirname, "..", "clients", "web");
+// IMPORTANT: resolve client path from project root (process.cwd),
+// not from __dirname (dist/server)
+const clientPath = path.resolve(process.cwd(), "clients", "web");
+console.log("[HTTP] Static client path:", clientPath);
+
+// Serve static client
 app.use(express.static(clientPath));
 
-// Fallback route: serve index.html
+// Fallback route: serve index.html for any unknown path
 app.get("*", (_req, res) => {
   res.sendFile(path.join(clientPath, "index.html"));
 });
@@ -84,17 +88,16 @@ wss.on("connection", (ws: WebSocket) => {
   );
 
   ws.on("message", (data: RawData) => {
-  try {
-    const text = typeof data === "string" ? data : data.toString("utf-8");
-    const msg = JSON.parse(text) as InputMessage;
-    if (msg.type === "input") {
-      kernel.setInputState(entityId, { move: msg.move });
+    try {
+      const text = typeof data === "string" ? data : data.toString("utf-8");
+      const msg = JSON.parse(text) as InputMessage;
+      if (msg.type === "input") {
+        kernel.setInputState(entityId, { move: msg.move });
+      }
+    } catch (err) {
+      console.error("[WSS] Error parsing client message:", err);
     }
-  } catch (err) {
-    console.error("[WSS] Error parsing client message:", err);
-  }
-});
-
+  });
 
   ws.on("close", () => {
     console.log("[WSS] Client disconnected");
