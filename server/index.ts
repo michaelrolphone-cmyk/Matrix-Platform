@@ -10,6 +10,8 @@ type EntityId = number;
 interface ClientInfo {
   ws: WebSocket;
   entityId: EntityId;
+  name: string;
+  color: string;
 }
 
 interface InputMessage {
@@ -22,23 +24,42 @@ interface FrameMessage {
   frame: any;
 }
 
-interface InputMessage {
-  type: "input";
-  move: [number, number, number];
-}
-
 interface ConceptMessage {
   type: "concept";
   label: string;
 }
 
-type ClientMessage = InputMessage | ConceptMessage;
+interface ChatMessage {
+  type: "chat";
+  text: string;
+}
+
+type ClientMessage = InputMessage | ConceptMessage | ChatMessage;
 
 
 const RDL_PATH = process.env.RDL_PATH || "./spec/rdl/rdl-core-v0.1.json";
 const PORT = Number(process.env.PORT || 8080);
 const PERCEPT_RADIUS = 200;
 const TICK_BROADCAST_MS = 100;
+
+const PLAYER_COLORS = [
+  "#7af7d0",
+  "#ff9c73",
+  "#7aa2ff",
+  "#ffd86b",
+  "#c9ff7a",
+  "#ff7ad9",
+  "#7afff6"
+];
+let nextPlayerColorIndex = 0;
+
+function allocateClientIdentity() {
+  const color = PLAYER_COLORS[nextPlayerColorIndex % PLAYER_COLORS.length];
+  nextPlayerColorIndex += 1;
+  const suffix = Math.floor(Math.random() * 900 + 100).toString(16);
+  const name = `wanderer-${suffix}`;
+  return { color, name };
+}
 
 // ---------------------------
 // Kernel
@@ -90,36 +111,47 @@ wss.on("connection", (ws: WebSocket) => {
 
   kernel.registerControlledEntity(entityId);
 
-  const clientInfo: ClientInfo = { ws, entityId };
+  const identity = allocateClientIdentity();
+  kernel.setEntitySignature(entityId, {
+    name: identity.name,
+    color: identity.color,
+    source: "ws:client"
+  });
+
+  const clientInfo: ClientInfo = { ws, entityId, name: identity.name, color: identity.color };
   clients.set(ws, clientInfo);
 
   console.log(
-    `[WSS] Assigned entity ${entityId} to client (#${clients.size})`
+    `[WSS] Assigned entity ${entityId} to client (#${clients.size}) as ${identity.name}`
   );
-  
-ws.on("message", (data: RawData) => {
-  try {
-    const text = typeof data === "string" ? data : data.toString("utf-8");
-    const msg = JSON.parse(text) as ClientMessage;
 
-    if (msg.type === "input") {
-      kernel.setInputState(entityId, { move: msg.move });
-    } else if (msg.type === "concept") {
-      kernel.injectConcept(msg.label, entityId, 1);
+  ws.on("message", (data: RawData) => {
+    try {
+      const text = typeof data === "string" ? data : data.toString("utf-8");
+      const msg = JSON.parse(text) as ClientMessage;
+
+      if (msg.type === "input") {
+        kernel.setInputState(entityId, { move: msg.move });
+      } else if (msg.type === "concept") {
+        kernel.injectConcept(msg.label, entityId, 1);
+      } else if (msg.type === "chat") {
+        kernel.postProximityChat(entityId, msg.text);
+      }
+    } catch (err) {
+      console.error("[WSS] Error parsing client message:", err);
     }
-  } catch (err) {
-    console.error("[WSS] Error parsing client message:", err);
-  }
-});
+  });
 
   ws.on("close", () => {
     console.log("[WSS] Client disconnected");
     clients.delete(ws);
+    kernel.clearEntitySignature(entityId);
   });
 
   ws.on("error", (err) => {
     console.error("[WSS] Client error:", err);
     clients.delete(ws);
+    kernel.clearEntitySignature(entityId);
   });
 });
 

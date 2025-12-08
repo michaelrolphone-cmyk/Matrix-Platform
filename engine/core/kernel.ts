@@ -200,6 +200,31 @@ interface ResonanceState {
 }
 
 // ---------------------------
+// Proximity chat (server-side log)
+// ---------------------------
+
+interface ChatMessage {
+  id: number;
+  authorId: EntityId;
+  text: string;
+  position: Vec3;
+  createdAt: number;
+  name?: string;
+  color?: string;
+}
+
+// ---------------------------
+// Identity signatures (client-facing identity & color)
+// ---------------------------
+
+interface IdentitySignature {
+  name: string;
+  color: string;
+  assignedAt: number;
+  source?: string;
+}
+
+// ---------------------------
 // World & perception
 // ---------------------------
 
@@ -219,12 +244,24 @@ interface PerceivedEntity {
   id: EntityId;
   relativePosition: Vec3;
   distance: number;
+  name?: string;
+  color?: string;
+}
+
+interface FrameChatMessage {
+  text: string;
+  name?: string;
+  color?: string;
+  distance: number;
+  ageSeconds: number;
 }
 
 interface FrameSelfState {
   id: EntityId;
   position: Vec3;
   velocity: Vec3;
+  name?: string;
+  color?: string;
   mood?: string;
 }
 
@@ -242,6 +279,7 @@ interface PerceptualFrame {
   };
   narrative?: string[];
   worldMood?: string;
+  chatLog?: FrameChatMessage[];
 }
 
 
@@ -279,6 +317,13 @@ export class CoreRealityKernel {
   private conceptImpulses: ConceptImpulse[] = [];
   private graphNodes: Map<string, GraphNode> = new Map();
   private graphEdges: Map<string, GraphEdge> = new Map();
+
+  // Proximity chat log
+  private nextChatId: number = 1;
+  private chatMessages: ChatMessage[] = [];
+
+  // Player-facing identity overlays
+  private identitySignatures: Map<EntityId, IdentitySignature> = new Map();
 
   constructor(rdlPath: string) {
     this.rdl = this.loadRdl(rdlPath);
@@ -420,6 +465,59 @@ export class CoreRealityKernel {
     console.log(`[CRK] Registered controlled entity: ${entityId}`);
   }
 
+  public setEntitySignature(
+    entityId: EntityId,
+    signature: { name: string; color: string; source?: string }
+  ) {
+    this.identitySignatures.set(entityId, {
+      name: signature.name,
+      color: signature.color,
+      source: signature.source,
+      assignedAt: this.world.timeSeconds
+    });
+  }
+
+  public clearEntitySignature(entityId: EntityId) {
+    this.identitySignatures.delete(entityId);
+  }
+
+  private getEntitySignature(entityId: EntityId): IdentitySignature | undefined {
+    return this.identitySignatures.get(entityId);
+  }
+
+  // ---------------------------
+  // Proximity chat
+  // ---------------------------
+
+  public postProximityChat(entityId: EntityId, text: string) {
+    const transform = this.world.components.transform.get(entityId);
+    if (!transform) return;
+
+    const trimmed = (text || "").trim();
+    if (!trimmed) return;
+
+    const normalized = trimmed.slice(0, 240);
+    const signature = this.getEntitySignature(entityId);
+
+    const message: ChatMessage = {
+      id: this.nextChatId++,
+      authorId: entityId,
+      text: normalized,
+      position: [...transform.position] as Vec3,
+      createdAt: this.world.timeSeconds,
+      name: signature?.name,
+      color: signature?.color
+    };
+
+    this.chatMessages.push(message);
+
+    // Keep the buffer bounded
+    const maxMessages = 200;
+    if (this.chatMessages.length > maxMessages) {
+      this.chatMessages.splice(0, this.chatMessages.length - maxMessages);
+    }
+  }
+
   public setInputState(entityId: EntityId, input: InputState) {
     if (!this.controlledEntities.has(entityId)) {
       this.registerControlledEntity(entityId);
@@ -526,7 +624,7 @@ export class CoreRealityKernel {
     };
   }
 
-    private classifyWorldMood(summary: { concepts: ConceptSummary[]; edges: EdgeSummary[] }): string {
+  private classifyWorldMood(summary: { concepts: ConceptSummary[]; edges: EdgeSummary[] }): string {
     const byLabel: { [label: string]: number } = {};
     for (const c of summary.concepts) {
       byLabel[c.label] = (byLabel[c.label] || 0) + c.weight;
@@ -771,6 +869,31 @@ export class CoreRealityKernel {
     return { local: sum, labels };
   }
 
+  private buildChatLogAround(position: Vec3, radius: number = 80, maxEntries = 10): FrameChatMessage[] {
+    const now = this.world.timeSeconds;
+    const out: FrameChatMessage[] = [];
+
+    for (const message of this.chatMessages) {
+      const dx = message.position[0] - position[0];
+      const dy = message.position[1] - position[1];
+      const dz = message.position[2] - position[2];
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (dist > radius) continue;
+
+      const age = now - message.createdAt;
+      out.push({
+        text: message.text,
+        name: message.name,
+        color: message.color,
+        distance: dist,
+        ageSeconds: age
+      });
+    }
+
+    out.sort((a, b) => a.ageSeconds - b.ageSeconds);
+    return out.slice(0, maxEntries);
+  }
+
   private classifyMood(resonance: ResonanceState): string {
     const labels = resonance.labels || {};
     const curiosity = labels["curiosity"] || 0;
@@ -812,6 +935,7 @@ export class CoreRealityKernel {
 
     const position = transform.position;
     const velocity = body.velocity;
+    const selfSignature = this.getEntitySignature(entityId);
 
     const nearbyEntities: PerceivedEntity[] = [];
 
@@ -823,10 +947,13 @@ export class CoreRealityKernel {
       const dz = op[2] - position[2];
       const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
       if (dist <= radius) {
+        const sig = this.getEntitySignature(otherId);
         nearbyEntities.push({
           id: otherId,
           relativePosition: [dx, dy, dz],
-          distance: dist
+          distance: dist,
+          name: sig?.name,
+          color: sig?.color
         });
       }
     }
@@ -837,6 +964,7 @@ export class CoreRealityKernel {
     const selfMood = this.classifyMood(resonance);
     const worldMood = this.classifyWorldMood(graphSummary);
     const narrative = this.buildNarrativeLines(selfMood, resonance, graphSummary);
+    const chatLog = this.buildChatLogAround(position, 120, 12);
 
     return {
       tick: this.world.tick,
@@ -845,6 +973,8 @@ export class CoreRealityKernel {
         id: entityId,
         position: [...position] as Vec3,
         velocity: [...velocity] as Vec3,
+        name: selfSignature?.name,
+        color: selfSignature?.color,
         mood: selfMood
       },
       nearbyEntities,
@@ -853,7 +983,8 @@ export class CoreRealityKernel {
       resonance,
       graphSummary,
       narrative,
-      worldMood
+      worldMood,
+      chatLog
     };
 
   }
@@ -897,6 +1028,7 @@ export class CoreRealityKernel {
     this.updatePhysics(dt);
     this.updateFoam(dt);
     this.updateConcepts();
+    this.updateChatMessages();
     this.updateThoughtGraphCooccurrences();
     this.resolveInteractions();
     this.emitTickSummary();
@@ -1118,6 +1250,12 @@ export class CoreRealityKernel {
     this.conceptImpulses = this.conceptImpulses.filter(
       c => now - c.createdAt < CONCEPT_TTL_SECONDS
     );
+  }
+
+  private updateChatMessages() {
+    const now = this.world.timeSeconds;
+    const ttl = 60; // seconds
+    this.chatMessages = this.chatMessages.filter(msg => now - msg.createdAt < ttl);
   }
 
   private resolveInteractions() {
