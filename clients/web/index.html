@@ -164,10 +164,14 @@
       <h1>State &#38; Mood</h1>
       <p id="moodText">mood: --</p>
       <p id="worldMoodText">world mood: --</p>
+      <h2>Atmosphere</h2>
+      <div id="atmosphereText" class="muted">(no atmospheric cues)</div>
       <h2>Local resonance</h2>
       <div id="resonanceList" class="muted">(no field activity yet)</div>
       <h2>Graph summary</h2>
       <div id="graphSummary" class="muted">(no concepts yet)</div>
+      <h2>Ambient anomalies</h2>
+      <div id="ambientList" class="muted">(no anomalies nearby)</div>
     </div>
   </div>
 
@@ -202,8 +206,10 @@
   const tickEl = document.getElementById("tickText");
   const moodEl = document.getElementById("moodText");
   const worldMoodEl = document.getElementById("worldMoodText");
+  const atmosphereEl = document.getElementById("atmosphereText");
   const resonanceEl = document.getElementById("resonanceList");
   const graphSummaryEl = document.getElementById("graphSummary");
+  const ambientListEl = document.getElementById("ambientList");
   const narrativeLinesEl = document.getElementById("narrativeLines");
   const chatLogEl = document.getElementById("chatLog");
   const chatInput = document.getElementById("chatInput");
@@ -404,6 +410,20 @@
     })
   };
 
+  function clonePalette(palette) {
+    return makePalette({
+      fogColor: palette.fogColor.getHex(),
+      fogDensity: palette.fogDensity,
+      groundColor: palette.groundColor.getHex(),
+      skyColor: palette.skyColor.getHex(),
+      hemiGround: palette.hemiGround.getHex(),
+      hemiIntensity: palette.hemiIntensity,
+      dirColor: palette.dirColor.getHex(),
+      dirIntensity: palette.dirIntensity,
+      background: palette.background.getHex()
+    });
+  }
+
   function selectMoodPalette(worldMood) {
     const mood = (worldMood || "").toLowerCase();
     for (const entry of moodPalettes) {
@@ -412,6 +432,26 @@
       }
     }
     return defaultPalette;
+  }
+
+  function applyAtmosphereToPalette(basePalette, atmosphere) {
+    const target = clonePalette(basePalette);
+    if (!atmosphere) return target;
+
+    const skyLight = Math.min(Math.max(atmosphere.skyLight ?? 0.5, 0), 1);
+    const fog = Math.min(Math.max(atmosphere.fogDensity ?? 0.2, 0), 1);
+    const skyTint = new THREE.Color(atmosphere.skyTint || target.skyColor.getHex());
+    const darkness = 1 - skyLight;
+
+    target.background.lerp(new THREE.Color(0x050712), darkness * 0.6);
+    target.skyColor.lerp(skyTint, 0.35 + skyLight * 0.15);
+    target.groundColor.lerp(new THREE.Color(0x0a0f18), darkness * 0.4);
+    target.fogColor.lerp(new THREE.Color(0x0c111d), Math.min(0.6, fog + darkness * 0.5));
+    target.fogDensity = THREE.MathUtils.lerp(target.fogDensity, 0.01 + fog * 0.06, 0.55);
+    target.dirIntensity *= 0.6 + skyLight * 0.7;
+    target.hemiIntensity *= 0.6 + skyLight * 0.5;
+
+    return target;
   }
 
   function lerpEnvironment(alpha = 0.02) {
@@ -454,12 +494,15 @@
   function updateMoodTint() {
     const { active } = environmentState;
     const bgHex = `#${active.background.getHexString()}`;
-    const skyHex = `#${active.skyColor.getHexString()}`;
+    const skyHex = lastAtmosphere?.skyTint || `#${active.skyColor.getHexString()}`;
     const fogHex = `#${active.fogColor.getHexString()}`;
+    const foamEnergy = lastAtmosphere?.foamEnergy || 0;
+    const overlayStrength = Math.min(0.32, 0.14 + foamEnergy * 0.06);
 
     document.body.style.background = `radial-gradient(circle at 45% 12%, ${skyHex} 0%, ${bgHex} 46%, ${fogHex} 100%)`;
     if (moodTint) {
       moodTint.style.background = `radial-gradient(circle at 70% 14%, ${skyHex}33, transparent 55%)`;
+      moodTint.style.opacity = overlayStrength.toFixed(2);
     }
   }
 
@@ -551,7 +594,9 @@
 
   let socket = null;
   let lastFrame = null;
+  let lastAtmosphere = null;
   let lastWorldMoodLabel = "";
+  let lastBasePalette = defaultPalette;
 
   function connect() {
     socket = new WebSocket(WS_URL);
@@ -574,6 +619,7 @@
         const msg = JSON.parse(event.data);
         if (msg.type === "frame") {
           lastFrame = msg.frame;
+          lastAtmosphere = msg.frame?.atmosphere || null;
         }
       } catch (e) {
         console.error("Error parsing message", e);
@@ -698,6 +744,35 @@
   // HUD updaters
   // ---------------------------
 
+  function setAtmosphereHUD(atmosphere) {
+    if (!atmosphere) {
+      atmosphereEl.textContent = "(no atmospheric cues)";
+      atmosphereEl.className = "muted";
+      return;
+    }
+
+    const parts = [];
+    parts.push(
+      `foam energy: ${atmosphere.foamEnergy.toFixed(2)} (peak ${atmosphere.foamPeak.toFixed(2)})`
+    );
+
+    parts.push(
+      `sky: ${atmosphere.phase} · light ${atmosphere.skyLight.toFixed(2)} · fog ${
+        atmosphere.fogDensity.toFixed(2)
+      }`
+    );
+
+    if (atmosphere.nearestAnomaly) {
+      const a = atmosphere.nearestAnomaly;
+      const anomalyBits = [`${a.label}`, `${a.distance.toFixed(0)}m`, `intensity ${a.intensity.toFixed(2)}`];
+      if (a.moodHint) anomalyBits.push(a.moodHint);
+      parts.push(anomalyBits.join(" · "));
+    }
+
+    atmosphereEl.textContent = parts.join(" · ");
+    atmosphereEl.className = "";
+  }
+
   function setResonanceHUD(resonance) {
     if (!resonance || resonance.local < 0.01) {
       resonanceEl.textContent = "(no significant local resonance)";
@@ -751,6 +826,36 @@
     graphSummaryEl.textContent = lines.join(" · ");
   }
 
+  function setAmbientHUD(ambientZones) {
+    ambientListEl.innerHTML = "";
+    if (!Array.isArray(ambientZones) || ambientZones.length === 0) {
+      ambientListEl.textContent = "(no anomalies nearby)";
+      ambientListEl.className = "muted";
+      return;
+    }
+
+    ambientListEl.className = "";
+    const limited = ambientZones.slice(0, 4);
+    for (const zone of limited) {
+      const line = document.createElement("p");
+      line.style.margin = "2px 0";
+      line.textContent =
+        `${zone.label}: ${zone.intensity.toFixed(2)} · ${zone.distance.toFixed(0)}m · r≈${zone.radius.toFixed(0)}m`;
+      if (zone.moodHint) {
+        line.textContent += ` · tone: ${zone.moodHint}`;
+      }
+      ambientListEl.appendChild(line);
+
+      if (zone.flavor) {
+        const flavor = document.createElement("p");
+        flavor.className = "muted";
+        flavor.style.margin = "1px 0 6px 0";
+        flavor.textContent = zone.flavor;
+        ambientListEl.appendChild(flavor);
+      }
+    }
+  }
+
   function setNarrativeHUD(narrative) {
     narrativeLinesEl.innerHTML = "";
     if (!Array.isArray(narrative) || narrative.length === 0) {
@@ -792,7 +897,14 @@
       p.appendChild(textSpan);
 
       const meta = document.createElement("span");
-      meta.textContent = ` · ${entry.distance.toFixed(0)}m · ${entry.ageSeconds.toFixed(1)}s ago`;
+      const metaParts = [
+        `${entry.distance.toFixed(0)}m`,
+        `${entry.ageSeconds.toFixed(1)}s ago`
+      ];
+      if (Array.isArray(entry.moodHints) && entry.moodHints.length > 0) {
+        metaParts.push(`seeded ${entry.moodHints.join(", ")}`);
+      }
+      meta.textContent = " · " + metaParts.join(" · ");
       meta.className = "muted";
       meta.style.marginLeft = "6px";
       p.appendChild(meta);
@@ -914,14 +1026,17 @@
       worldMoodEl.textContent = "world mood: " + wm;
 
       if (wm !== lastWorldMoodLabel) {
-        environmentState.target = selectMoodPalette(wm);
+        lastBasePalette = selectMoodPalette(wm);
         lastWorldMoodLabel = wm;
       }
 
+      environmentState.target = applyAtmosphereToPalette(lastBasePalette, lastAtmosphere);
       lerpEnvironment();
 
+      setAtmosphereHUD(lastAtmosphere);
       setResonanceHUD(resonance);
       setGraphSummaryHUD(graphSummary);
+      setAmbientHUD(lastFrame.ambientZones);
       setNarrativeHUD(narrative);
       setChatLog(lastFrame.chatLog);
     }
