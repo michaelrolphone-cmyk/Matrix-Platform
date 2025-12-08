@@ -82,6 +82,60 @@
       font-size: 12px;
     }
 
+    #chatPanel {
+      position: absolute;
+      left: 10px;
+      bottom: 150px;
+      width: 320px;
+      z-index: 10;
+      pointer-events: none;
+    }
+    #chatLog {
+      max-height: 180px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      overflow: hidden;
+    }
+    #chatLog p {
+      margin: 0;
+      font-size: 12px;
+      line-height: 1.4;
+      color: #e7f3ff;
+    }
+    #chatLog .muted {
+      color: #8ba0c3;
+    }
+    #chatInputWrap {
+      margin-top: 6px;
+      pointer-events: auto;
+    }
+    #chatInput {
+      width: 100%;
+      padding: 8px 10px;
+      border-radius: 6px;
+      border: 1px solid rgba(140, 190, 255, 0.3);
+      background: rgba(5, 8, 20, 0.85);
+      color: #e0ecff;
+      font-size: 12px;
+      box-sizing: border-box;
+    }
+    #chatInput:focus {
+      outline: none;
+      border-color: #7af7d0;
+      box-shadow: 0 0 0 1px rgba(122, 247, 208, 0.6);
+    }
+
+    #moodTint {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 0;
+      mix-blend-mode: screen;
+      opacity: 0.16;
+      background: radial-gradient(circle at 60% 10%, rgba(136, 187, 255, 0.18), transparent 50%);
+    }
+
     canvas {
       display: block;
       width: 100%;
@@ -95,6 +149,7 @@
   </style>
 </head>
 <body>
+<div id="moodTint"></div>
 <div id="app">
   <div id="ui">
     <div class="panel">
@@ -102,7 +157,7 @@
       <p id="statusText">Connecting...</p>
       <p class="muted" id="tickText">t = -- s · tick = --</p>
       <p class="muted" id="helpText">
-        Move: W/A/S/D · Inject: 1=curiosity, 2=danger, 3=calm
+        Move: W/A/S/D · Inject: 1=curiosity, 2=danger, 3=calm · Chat: Enter
       </p>
     </div>
     <div class="panel">
@@ -125,6 +180,18 @@
     </div>
   </div>
 
+  <div id="chatPanel">
+    <div class="panel">
+      <h1>Proximity Chat</h1>
+      <div id="chatLog">
+        <p class="muted">No nearby messages yet.</p>
+      </div>
+      <div id="chatInputWrap">
+        <input id="chatInput" type="text" placeholder="Press Enter to chat with nearby wanderers" />
+      </div>
+    </div>
+  </div>
+
   <canvas id="view"></canvas>
 </div>
 
@@ -138,17 +205,76 @@
   const resonanceEl = document.getElementById("resonanceList");
   const graphSummaryEl = document.getElementById("graphSummary");
   const narrativeLinesEl = document.getElementById("narrativeLines");
+  const chatLogEl = document.getElementById("chatLog");
+  const chatInput = document.getElementById("chatInput");
+  const moodTint = document.getElementById("moodTint");
   const canvas = document.getElementById("view");
 
   // ---------------------------
   // Three.js scene setup
   // ---------------------------
   const WORLD_SCALE = 1; // 1 scene unit = 1 meter in the sim
+  const DEFAULT_SELF_COLOR = "#00ff99";
+  const DEFAULT_OTHER_COLOR = "#ff4080";
+  const DEFAULT_HALO_COLOR = "#33bbff";
+
+  function createNameSprite(text, color = DEFAULT_HALO_COLOR) {
+    const canvas = document.createElement("canvas");
+    canvas.width = 256;
+    canvas.height = 96;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "rgba(5, 8, 20, 0.7)";
+    ctx.strokeStyle = color || DEFAULT_HALO_COLOR;
+    ctx.lineWidth = 3;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.strokeRect(1.5, 1.5, canvas.width - 3, canvas.height - 3);
+    ctx.font = "24px 'Segoe UI', system-ui, sans-serif";
+    ctx.fillStyle = "#e0ecff";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+
+    const texture = new THREE.CanvasTexture(canvas);
+    const material = new THREE.SpriteMaterial({
+      map: texture,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false
+    });
+    const sprite = new THREE.Sprite(material);
+    sprite.scale.set(canvas.width / 90, canvas.height / 90, 1);
+    sprite.userData = { canvas, ctx, text, color };
+    return sprite;
+  }
+
+  function updateNameSprite(sprite, text, color = DEFAULT_HALO_COLOR) {
+    const { canvas, ctx } = sprite.userData;
+    if (!canvas || !ctx) return;
+    if (sprite.userData.text === text && sprite.userData.color === color) return;
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "rgba(5, 8, 20, 0.7)";
+    ctx.strokeStyle = color || DEFAULT_HALO_COLOR;
+    ctx.lineWidth = 3;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.strokeRect(1.5, 1.5, canvas.width - 3, canvas.height - 3);
+    ctx.font = "24px 'Segoe UI', system-ui, sans-serif";
+    ctx.fillStyle = "#e0ecff";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+    if (sprite.material.map) {
+      sprite.material.map.needsUpdate = true;
+    }
+    sprite.userData.text = text;
+    sprite.userData.color = color;
+  }
 
 
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
   renderer.setPixelRatio(window.devicePixelRatio || 1);
   renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setClearColor(0x050510);
 
   const scene = new THREE.Scene();
   scene.fog = new THREE.FogExp2(0x050510, 0.018);
@@ -181,12 +307,170 @@
   gridHelper.position.y = 0.01;
   scene.add(gridHelper);
 
+  // Environment mood palettes (world mood -> lighting/fog)
+  function makePalette({
+    fogColor,
+    fogDensity,
+    groundColor,
+    skyColor,
+    hemiGround,
+    hemiIntensity,
+    dirColor,
+    dirIntensity,
+    background
+  }) {
+    return {
+      fogColor: new THREE.Color(fogColor),
+      fogDensity,
+      groundColor: new THREE.Color(groundColor),
+      skyColor: new THREE.Color(skyColor),
+      hemiGround: new THREE.Color(hemiGround),
+      hemiIntensity,
+      dirColor: new THREE.Color(dirColor),
+      dirIntensity,
+      background: new THREE.Color(background)
+    };
+  }
+
+  const defaultPalette = makePalette({
+    fogColor: 0x050510,
+    fogDensity: 0.018,
+    groundColor: 0x111522,
+    skyColor: 0x88bbff,
+    hemiGround: 0x202030,
+    hemiIntensity: 0.8,
+    dirColor: 0xffffff,
+    dirIntensity: 0.6,
+    background: 0x050510
+  });
+
+  const moodPalettes = [
+    {
+      matches: ["danger", "tense", "anxious", "threat"],
+      palette: makePalette({
+        fogColor: 0x12060c,
+        fogDensity: 0.026,
+        groundColor: 0x1c0f18,
+        skyColor: 0x6a2c46,
+        hemiGround: 0x1c1a26,
+        hemiIntensity: 0.7,
+        dirColor: 0xff5c7a,
+        dirIntensity: 0.45,
+        background: 0x0a050a
+      })
+    },
+    {
+      matches: ["calm", "settled"],
+      palette: makePalette({
+        fogColor: 0x0a1418,
+        fogDensity: 0.015,
+        groundColor: 0x0f1e24,
+        skyColor: 0x6cc6ff,
+        hemiGround: 0x16242c,
+        hemiIntensity: 0.9,
+        dirColor: 0xb8ffe6,
+        dirIntensity: 0.55,
+        background: 0x0a1116
+      })
+    },
+    {
+      matches: ["curious", "exploratory", "mixed"],
+      palette: makePalette({
+        fogColor: 0x0d111d,
+        fogDensity: 0.02,
+        groundColor: 0x131a28,
+        skyColor: 0x9ac3ff,
+        hemiGround: 0x1f2434,
+        hemiIntensity: 0.85,
+        dirColor: 0x7af7d0,
+        dirIntensity: 0.65,
+        background: 0x080c18
+      })
+    }
+  ];
+
+  const environmentState = {
+    target: defaultPalette,
+    active: makePalette({
+      fogColor: defaultPalette.fogColor.getHex(),
+      fogDensity: defaultPalette.fogDensity,
+      groundColor: defaultPalette.groundColor.getHex(),
+      skyColor: defaultPalette.skyColor.getHex(),
+      hemiGround: defaultPalette.hemiGround.getHex(),
+      hemiIntensity: defaultPalette.hemiIntensity,
+      dirColor: defaultPalette.dirColor.getHex(),
+      dirIntensity: defaultPalette.dirIntensity,
+      background: defaultPalette.background.getHex()
+    })
+  };
+
+  function selectMoodPalette(worldMood) {
+    const mood = (worldMood || "").toLowerCase();
+    for (const entry of moodPalettes) {
+      if (entry.matches.some((m) => mood.includes(m))) {
+        return entry.palette;
+      }
+    }
+    return defaultPalette;
+  }
+
+  function lerpEnvironment(alpha = 0.02) {
+    const { active, target } = environmentState;
+    active.fogColor.lerp(target.fogColor, alpha);
+    active.groundColor.lerp(target.groundColor, alpha);
+    active.skyColor.lerp(target.skyColor, alpha);
+    active.hemiGround.lerp(target.hemiGround, alpha);
+    active.dirColor.lerp(target.dirColor, alpha);
+    active.background.lerp(target.background, alpha);
+    active.fogDensity = THREE.MathUtils.lerp(active.fogDensity, target.fogDensity, alpha);
+    active.hemiIntensity = THREE.MathUtils.lerp(active.hemiIntensity, target.hemiIntensity, alpha);
+    active.dirIntensity = THREE.MathUtils.lerp(active.dirIntensity, target.dirIntensity, alpha);
+
+    updateMoodTint();
+
+    if (scene.fog) {
+      scene.fog.color.copy(active.fogColor);
+      scene.fog.density = active.fogDensity;
+    }
+    renderer.setClearColor(active.background);
+
+    groundMat.color.copy(active.groundColor);
+    hemiLight.color.copy(active.skyColor);
+    hemiLight.groundColor.copy(active.hemiGround);
+    hemiLight.intensity = active.hemiIntensity;
+    dirLight.color.copy(active.dirColor);
+    dirLight.intensity = active.dirIntensity;
+
+    const gridMaterials = Array.isArray(gridHelper.material)
+      ? gridHelper.material
+      : [gridHelper.material];
+    for (const material of gridMaterials) {
+      if (material && "color" in material) {
+        material.color.set(active.skyColor);
+      }
+    }
+  }
+
+  function updateMoodTint() {
+    const { active } = environmentState;
+    const bgHex = `#${active.background.getHexString()}`;
+    const skyHex = `#${active.skyColor.getHexString()}`;
+    const fogHex = `#${active.fogColor.getHexString()}`;
+
+    document.body.style.background = `radial-gradient(circle at 45% 12%, ${skyHex} 0%, ${bgHex} 46%, ${fogHex} 100%)`;
+    if (moodTint) {
+      moodTint.style.background = `radial-gradient(circle at 70% 14%, ${skyHex}33, transparent 55%)`;
+    }
+  }
+
   // Self avatar
   const selfGroup = new THREE.Group();
   scene.add(selfGroup);
 
   const selfBodyGeo = new THREE.CylinderGeometry(0.6, 0.6, 2.4, 20);
-  const selfBodyMat = new THREE.MeshStandardMaterial({ color: 0x00ff99 });
+  const selfBodyMat = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(DEFAULT_SELF_COLOR)
+  });
   const selfBody = new THREE.Mesh(selfBodyGeo, selfBodyMat);
   selfBody.position.y = 1.2;
   selfGroup.add(selfBody);
@@ -197,16 +481,10 @@
   selfHead.position.y = 2.4;
   selfGroup.add(selfHead);
 
-  // Other entities
-  const entityMeshes = new Map(); // id -> THREE.Mesh
-
-  const otherGeo = new THREE.SphereGeometry(0.5, 16, 16);
-  const otherMat = new THREE.MeshStandardMaterial({ color: 0xff4080 });
-
   // Resonance halo
   const haloGeo = new THREE.RingGeometry(1.5, 2.3, 40);
   const haloMat = new THREE.MeshBasicMaterial({
-    color: 0x33bbff,
+    color: new THREE.Color(DEFAULT_HALO_COLOR),
     transparent: true,
     opacity: 0.0,
     side: THREE.DoubleSide
@@ -215,6 +493,45 @@
   halo.rotation.x = -Math.PI / 2;
   halo.position.y = 0.05;
   selfGroup.add(halo);
+
+  const selfNameTag = createNameSprite("you", DEFAULT_HALO_COLOR);
+  selfNameTag.position.set(0, 3.2, 0);
+  selfGroup.add(selfNameTag);
+
+  // Other entities + overlays
+  const otherGeo = new THREE.SphereGeometry(0.5, 16, 16);
+  const entityVisuals = new Map(); // id -> { mesh, label, name, color, target, initialized }
+
+  function getEntityVisual(id, name, color) {
+    let visual = entityVisuals.get(id);
+    if (!visual) {
+      const mesh = new THREE.Mesh(
+        otherGeo,
+        new THREE.MeshStandardMaterial({ color: new THREE.Color(DEFAULT_OTHER_COLOR) })
+      );
+      mesh.position.y = 1.0;
+      const label = createNameSprite(name, color || DEFAULT_OTHER_COLOR);
+      label.position.set(0, 3.0, 0);
+      scene.add(mesh);
+      scene.add(label);
+      const target = new THREE.Vector3();
+      visual = { mesh, label, name: null, color: null, target, initialized: false };
+      entityVisuals.set(id, visual);
+    }
+
+    const material = visual.mesh.material;
+    if (material && "color" in material) {
+      material.color.set(color || DEFAULT_OTHER_COLOR);
+    }
+
+    if (visual.name !== name || visual.color !== color) {
+      updateNameSprite(visual.label, name, color || DEFAULT_OTHER_COLOR);
+    }
+
+    visual.name = name;
+    visual.color = color;
+    return visual;
+  }
 
   function resize() {
     const w = window.innerWidth;
@@ -234,6 +551,7 @@
 
   let socket = null;
   let lastFrame = null;
+  let lastWorldMoodLabel = "";
 
   function connect() {
     socket = new WebSocket(WS_URL);
@@ -271,6 +589,10 @@
 
   const keys = { w: false, a: false, s: false, d: false };
 
+  function isChatFocused() {
+    return document.activeElement === chatInput;
+  }
+
   const conceptLabels = {
     "1": "curiosity",
     "2": "danger",
@@ -279,6 +601,19 @@
 
   window.addEventListener("keydown", (e) => {
     const k = e.key.toLowerCase();
+
+    if (e.key === "Enter" && !isChatFocused()) {
+      chatInput.focus();
+      e.preventDefault();
+      return;
+    }
+
+    if (isChatFocused()) {
+      if (e.key === "Escape") {
+        chatInput.blur();
+      }
+      return;
+    }
 
     // Movement keys
     if (k in keys) {
@@ -301,11 +636,39 @@
   });
 
   window.addEventListener("keyup", (e) => {
+    if (isChatFocused()) return;
     const k = e.key.toLowerCase();
     if (k in keys) {
       keys[k] = false;
       e.preventDefault();
     }
+  });
+
+  function sendChatMessage() {
+    const text = chatInput.value.trim();
+    if (!text || !socket || socket.readyState !== WebSocket.OPEN) return;
+    socket.send(
+      JSON.stringify({
+        type: "chat",
+        text
+      })
+    );
+    chatInput.value = "";
+  }
+
+  chatInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      sendChatMessage();
+      chatInput.blur();
+      e.preventDefault();
+    }
+    if (e.key === "Escape") {
+      chatInput.blur();
+    }
+  });
+
+  chatInput.addEventListener("focus", () => {
+    keys.w = keys.a = keys.s = keys.d = false;
   });
 
   function currentMoveVector() {
@@ -404,96 +767,167 @@
     }
   }
 
+  function setChatLog(log) {
+    chatLogEl.innerHTML = "";
+    if (!Array.isArray(log) || log.length === 0) {
+      const p = document.createElement("p");
+      p.className = "muted";
+      p.textContent = "No nearby messages yet.";
+      chatLogEl.appendChild(p);
+      return;
+    }
+
+    const limited = log.slice(-10);
+    for (const entry of limited) {
+      const p = document.createElement("p");
+      const name = entry.name || "wanderer";
+      const nameSpan = document.createElement("span");
+      nameSpan.textContent = name + ": ";
+      nameSpan.style.color = entry.color || "#9cc5ff";
+      nameSpan.style.fontWeight = "600";
+      p.appendChild(nameSpan);
+
+      const textSpan = document.createElement("span");
+      textSpan.textContent = entry.text;
+      p.appendChild(textSpan);
+
+      const meta = document.createElement("span");
+      meta.textContent = ` · ${entry.distance.toFixed(0)}m · ${entry.ageSeconds.toFixed(1)}s ago`;
+      meta.className = "muted";
+      meta.style.marginLeft = "6px";
+      p.appendChild(meta);
+
+      chatLogEl.appendChild(p);
+    }
+  }
+
   // ---------------------------
   // Animation loop
   // ---------------------------
-let cameraTarget = new THREE.Vector3(0, 0, 0);
+  let cameraTarget = new THREE.Vector3(0, 0, 0);
 
-function animate() {
-  requestAnimationFrame(animate);
+  function animate() {
+    requestAnimationFrame(animate);
 
-  if (lastFrame) {
-    const {
-      self,
-      nearbyEntities,
-      resonance,
-      graphSummary,
-      narrative,
-      worldMood
-    } = lastFrame;
+    if (lastFrame) {
+      const {
+        self,
+        nearbyEntities,
+        resonance,
+        graphSummary,
+        narrative,
+        worldMood
+      } = lastFrame;
 
-    // World-space position of the player
-    const sx = self.position[0] * WORLD_SCALE;
-    const sz = self.position[2] * WORLD_SCALE;
+      // World-space position of the player
+      const sx = self.position[0] * WORLD_SCALE;
+      const sz = self.position[2] * WORLD_SCALE;
 
-    // Place the avatar at its world position
-    selfGroup.position.set(sx, 0, sz);
-
-    // Update halo based on local resonance
-    const r = resonance ? resonance.local : 0;
-    const alpha = Math.max(0, Math.min(0.8, r * 0.15));
-    halo.material.opacity = alpha;
-    const haloScale = 1 + Math.min(2.5, r * 0.3);
-    halo.scale.set(haloScale, haloScale, haloScale);
-
-    // Update other entities at their world positions
-    const seenIds = new Set();
-    if (Array.isArray(nearbyEntities)) {
-      for (const ent of nearbyEntities) {
-        const id = ent.id;
-        seenIds.add(id);
-        let mesh = entityMeshes.get(id);
-        if (!mesh) {
-          mesh = new THREE.Mesh(otherGeo, otherMat.clone());
-          mesh.position.y = 1.0;
-          scene.add(mesh);
-          entityMeshes.set(id, mesh);
-        }
-
-        // relative position from the frame
-        const dx = ent.relativePosition[0] * WORLD_SCALE;
-        const dz = ent.relativePosition[2] * WORLD_SCALE;
-
-        // world position = self world pos + relative offset
-        mesh.position.x = sx + dx;
-        mesh.position.z = sz + dz;
+      const selfColor = self.color || DEFAULT_SELF_COLOR;
+      if (selfBody.material && "color" in selfBody.material) {
+        selfBody.material.color.set(selfColor);
       }
+      if (selfHead.material && "color" in selfHead.material) {
+        selfHead.material.color.set(selfColor);
+      }
+      updateNameSprite(selfNameTag, self.name || "you", selfColor);
+
+      // Place the avatar at its world position
+      selfGroup.position.set(sx, 0, sz);
+
+      // Update halo based on local resonance
+      const r = resonance ? resonance.local : 0;
+      const alpha = Math.max(0, Math.min(0.8, r * 0.15));
+      halo.material.opacity = alpha;
+      if (halo.material && "color" in halo.material) {
+        halo.material.color.set(selfColor || DEFAULT_HALO_COLOR);
+      }
+      const haloScale = 1 + Math.min(2.5, r * 0.3);
+      halo.scale.set(haloScale, haloScale, haloScale);
+
+      // Update other entities at their world positions
+      const seenIds = new Set();
+      if (Array.isArray(nearbyEntities)) {
+        for (const ent of nearbyEntities) {
+          const id = ent.id;
+          seenIds.add(id);
+          const visual = getEntityVisual(
+            id,
+            ent.name || `entity-${id}`,
+            ent.color || DEFAULT_OTHER_COLOR
+          );
+
+          const dx = ent.relativePosition[0] * WORLD_SCALE;
+          const dz = ent.relativePosition[2] * WORLD_SCALE;
+
+          const targetX = sx + dx;
+          const targetZ = sz + dz;
+          visual.target.set(targetX, visual.mesh.position.y, targetZ);
+          if (!visual.initialized) {
+            visual.mesh.position.copy(visual.target);
+            visual.label.position.set(
+              visual.mesh.position.x,
+              visual.mesh.position.y + 2.4,
+              visual.mesh.position.z
+            );
+            visual.initialized = true;
+          }
+          visual.mesh.visible = true;
+          visual.label.visible = true;
+        }
+      }
+
+      // Hide entities that are not currently in perception
+      for (const [id, visual] of entityVisuals.entries()) {
+        const visible = seenIds.has(id);
+        visual.mesh.visible = visible;
+        visual.label.visible = visible;
+        if (visible) {
+          visual.mesh.position.lerp(visual.target, 0.12);
+          visual.label.position.set(
+            visual.mesh.position.x,
+            visual.mesh.position.y + 2.4,
+            visual.mesh.position.z
+          );
+        }
+      }
+
+      // Smooth camera to hover *over the player*
+      const desiredCamPos = new THREE.Vector3(sx, 30, sz + 30);
+      camera.position.lerp(desiredCamPos, 0.05);
+
+      const desiredTarget = new THREE.Vector3(sx, 1.5, sz);
+      cameraTarget.lerp(desiredTarget, 0.1);
+      camera.lookAt(cameraTarget);
+
+      // HUD text
+      tickEl.textContent =
+        "t = " +
+        lastFrame.timeSeconds.toFixed(2) +
+        " s · tick = " +
+        lastFrame.tick;
+
+      const moodText = self.mood ? `mood: ${self.mood}` : "mood: neutral";
+      moodEl.textContent = moodText;
+
+      const wm = worldMood || "mixed / unknown";
+      worldMoodEl.textContent = "world mood: " + wm;
+
+      if (wm !== lastWorldMoodLabel) {
+        environmentState.target = selectMoodPalette(wm);
+        lastWorldMoodLabel = wm;
+      }
+
+      lerpEnvironment();
+
+      setResonanceHUD(resonance);
+      setGraphSummaryHUD(graphSummary);
+      setNarrativeHUD(narrative);
+      setChatLog(lastFrame.chatLog);
     }
 
-    // Hide entities that are not currently in perception
-    for (const [id, mesh] of entityMeshes.entries()) {
-      mesh.visible = seenIds.has(id);
-    }
-
-    // Smooth camera to hover *over the player*
-    const desiredCamPos = new THREE.Vector3(sx, 30, sz + 30);
-    camera.position.lerp(desiredCamPos, 0.05);
-
-    const desiredTarget = new THREE.Vector3(sx, 1.5, sz);
-    cameraTarget.lerp(desiredTarget, 0.1);
-    camera.lookAt(cameraTarget);
-
-    // HUD text
-    tickEl.textContent =
-      "t = " +
-      lastFrame.timeSeconds.toFixed(2) +
-      " s · tick = " +
-      lastFrame.tick;
-
-    const moodText = self.mood ? `mood: ${self.mood}` : "mood: neutral";
-    moodEl.textContent = moodText;
-
-    const wm = worldMood || "mixed / unknown";
-    worldMoodEl.textContent = "world mood: " + wm;
-
-    setResonanceHUD(resonance);
-    setGraphSummaryHUD(graphSummary);
-    setNarrativeHUD(narrative);
+    renderer.render(scene, camera);
   }
-
-  renderer.render(scene, camera);
-}
-
 
   animate();
 </script>
