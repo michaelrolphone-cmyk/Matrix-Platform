@@ -1049,7 +1049,27 @@
       moodEl.textContent = moodText;
 
       const wm = worldMood || "mixed / unknown";
-      worldMoodEl.textContent = "world mood: " + wm;
+      const wmConfidence = typeof lastFrame.worldMoodConfidence === "number"
+        ? lastFrame.worldMoodConfidence
+        : null;
+      const wmAge = typeof lastFrame.worldMoodSince === "number" ? lastFrame.worldMoodSince : null;
+      const wmSignal = lastFrame.worldMoodSignalQuality;
+      const wmTrend = lastFrame.worldMoodTrend;
+      const wmParts = [wm];
+      if (wmConfidence !== null) {
+        wmParts.push(`signal ${(wmConfidence * 100).toFixed(0)}%`);
+      }
+      if (wmAge !== null) {
+        const ageLabel = wmAge > 120 ? "steady" : wmAge > 40 ? "settling" : "forming";
+        wmParts.push(`${ageLabel} ${wmAge.toFixed(0)}s`);
+      }
+      if (wmSignal) {
+        wmParts.push(`quality ${wmSignal}`);
+      }
+      if (wmTrend && wmTrend !== "steady") {
+        wmParts.push(wmTrend === "rising" ? "signal rising" : "signal fading");
+      }
+      worldMoodEl.textContent = "world mood: " + wmParts.join(" · ");
 
       if (wm !== lastWorldMoodLabel) {
         lastBasePalette = selectMoodPalette(wm);

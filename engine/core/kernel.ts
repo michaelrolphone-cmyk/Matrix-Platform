@@ -299,6 +299,8 @@ interface MoodSnapshot {
   mood: string;
   confidence: number;
   sinceSeconds: number;
+  signalQuality?: "strong" | "steady" | "fragile" | "stale";
+  trend?: "rising" | "steady" | "fading";
 }
 
 interface FrameAmbientZone {
@@ -340,6 +342,10 @@ interface PerceptualFrame {
   };
   narrative?: string[];
   worldMood?: string;
+  worldMoodConfidence?: number;
+  worldMoodSince?: number;
+  worldMoodSignalQuality?: "strong" | "steady" | "fragile" | "stale";
+  worldMoodTrend?: "rising" | "steady" | "fading";
   chatLog?: FrameChatMessage[];
   ambientZones?: FrameAmbientZone[];
   atmosphere?: FrameAtmosphere;
@@ -384,6 +390,7 @@ export class CoreRealityKernel {
   private conceptImpulses: ConceptImpulse[] = [];
   private graphNodes: Map<string, GraphNode> = new Map();
   private graphEdges: Map<string, GraphEdge> = new Map();
+  private lastGraphActivityAt: number = 0;
 
   // Proximity chat log
   private nextChatId: number = 1;
@@ -398,12 +405,29 @@ export class CoreRealityKernel {
     { mood: string; lastChangeAt: number; stability: number; lastSeenAt: number }
   > = new Map();
 
+  // World mood memory to keep shard-level sentiment stable
+  private worldMoodMemory?: {
+    mood: string;
+    stability: number;
+    lastChangeAt: number;
+    lastSeenAt: number;
+  };
+
+  private worldMoodTrend: "rising" | "steady" | "fading" = "steady";
+
+  // Cached graph summary for consistent world mood sampling per tick
+  private globalGraphSummary: { concepts: ConceptSummary[]; edges: EdgeSummary[] } = {
+    concepts: [],
+    edges: []
+  };
+
   constructor(rdlPath: string) {
     this.rdl = this.loadRdl(rdlPath);
     this.indexArchetypes(this.rdl.entity_archetypes);
     this.ambientFoamZones = this.createAmbientFoamZones();
     this.world = this.initWorld(this.rdl.universe);
     this.bootstrapWorldFromArchetypes(this.rdl.entity_archetypes);
+    this.updateWorldMoodMemory();
   }
 
   private loadRdl(rdlPath: string): RDLCore {
@@ -695,6 +719,7 @@ export class CoreRealityKernel {
     }
     node.totalCount += 1;
     node.lastSeenAt = this.world.timeSeconds;
+    this.lastGraphActivityAt = this.world.timeSeconds;
 
     console.log(
       `[CRK] Injected concept "${label}" at t=${this.world.timeSeconds.toFixed(
@@ -769,20 +794,58 @@ export class CoreRealityKernel {
         }
         edge.weight += 1;
         edge.lastCooccurAt = now;
+        this.lastGraphActivityAt = now;
       }
+    }
+  }
+
+  private decayGraphMemory(dt: number) {
+    if (dt <= 0) return;
+
+    const now = this.world.timeSeconds;
+    const baseDecay = Math.exp(-0.08 * dt);
+
+    const removeNodeLabels: string[] = [];
+    for (const node of this.graphNodes.values()) {
+      const ageSeconds = Math.max(0, now - node.lastSeenAt);
+      const agePenalty = Math.exp(-0.004 * ageSeconds);
+      node.totalCount *= baseDecay * agePenalty;
+      if (node.totalCount < 0.01) {
+        removeNodeLabels.push(node.label);
+      }
+    }
+    for (const label of removeNodeLabels) {
+      this.graphNodes.delete(label);
+    }
+
+    const removeEdgeKeys: string[] = [];
+    for (const [key, edge] of this.graphEdges.entries()) {
+      const ageSeconds = Math.max(0, now - edge.lastCooccurAt);
+      const agePenalty = Math.exp(-0.004 * ageSeconds);
+      edge.weight *= baseDecay * agePenalty;
+      if (edge.weight < 0.01) {
+        removeEdgeKeys.push(key);
+      }
+    }
+    for (const key of removeEdgeKeys) {
+      this.graphEdges.delete(key);
     }
   }
 
   private buildGlobalGraphSummary(maxNodes: number = 5, maxEdges: number = 5) {
     const nodeArr: ConceptSummary[] = [];
     for (const node of this.graphNodes.values()) {
-      nodeArr.push({ label: node.label, weight: node.totalCount });
+      if (node.totalCount > 0.01) {
+        nodeArr.push({ label: node.label, weight: node.totalCount });
+      }
     }
     nodeArr.sort((a, b) => b.weight - a.weight);
 
     const edgeArr: EdgeSummary[] = [];
     for (const edge of this.graphEdges.values()) {
-      edgeArr.push({ a: edge.a, b: edge.b, weight: edge.weight });
+      if (edge.weight > 0.01) {
+        edgeArr.push({ a: edge.a, b: edge.b, weight: edge.weight });
+      }
     }
     edgeArr.sort((a, b) => b.weight - a.weight);
 
@@ -823,13 +886,121 @@ export class CoreRealityKernel {
     return "mixed / shifting";
   }
 
+  private estimateWorldMoodStrength(summary: { concepts: ConceptSummary[]; edges: EdgeSummary[] }) {
+    const conceptWeight = summary.concepts.reduce((sum, c) => sum + c.weight, 0);
+    const edgeWeight = summary.edges.reduce((sum, e) => sum + e.weight, 0);
+    const dominant = summary.concepts[0]?.weight || 0;
+    const total = conceptWeight + 0.4 * edgeWeight;
+    if (total <= 0) return 0;
+
+    const dominanceFactor = dominant > 0 ? dominant / Math.max(1, conceptWeight) : 0;
+    return this.clamp01(total * 0.08 + dominanceFactor * 0.3);
+  }
+
+  private updateWorldMoodMemory() {
+    const summary = this.buildGlobalGraphSummary();
+    this.globalGraphSummary = summary;
+
+    const moodLabel = this.classifyWorldMood(summary);
+    const strength = this.estimateWorldMoodStrength(summary);
+    const now = this.world.timeSeconds;
+    const timeSinceGraphActivity = this.lastGraphActivityAt > 0 ? now - this.lastGraphActivityAt : Infinity;
+    const hasFreshSignal = strength > 0.02 && timeSinceGraphActivity < 120;
+    const prevStability = this.worldMoodMemory?.stability ?? strength;
+
+    if (!this.worldMoodMemory) {
+      this.worldMoodMemory = {
+        mood: hasFreshSignal ? moodLabel : "empty",
+        stability: hasFreshSignal ? strength : 0,
+        lastChangeAt: now,
+        lastSeenAt: hasFreshSignal ? now : 0
+      };
+      this.worldMoodTrend = "steady";
+      return;
+    }
+
+    const memory = this.worldMoodMemory;
+    const timeSinceChange = now - memory.lastChangeAt;
+    const lowSignal = strength < 0.06;
+    const lastSeenAt = memory.lastSeenAt ?? 0;
+    const timeSinceSeen = hasFreshSignal ? 0 : now - lastSeenAt;
+
+    let mood = memory.mood;
+    let stability = Math.max(memory.stability * (lowSignal ? 0.9 : 0.97), strength);
+
+    // If the shard has been quiet for a while, gently bleed stability and
+    // eventually clear the mood back to empty so downstream cues know the
+    // feeling is fading out instead of frozen in time.
+    if (!hasFreshSignal && timeSinceSeen > 60) {
+      const stalePenalty = Math.exp(-0.0025 * (timeSinceSeen - 60));
+      stability *= stalePenalty;
+      if (timeSinceSeen > 150 && stability < 0.15) {
+        mood = "empty";
+      }
+    }
+
+    if (moodLabel !== memory.mood) {
+      const allowChange = strength > memory.stability * 0.6 || timeSinceChange > 45 || moodLabel === "empty";
+      if (allowChange) {
+        mood = moodLabel;
+        stability = Math.max(strength, stability * 0.7);
+        this.worldMoodMemory = { mood, stability, lastChangeAt: now, lastSeenAt: hasFreshSignal ? now : lastSeenAt };
+        this.worldMoodTrend = stability > prevStability + 0.05 ? "rising" : stability < prevStability - 0.05 ? "fading" : "steady";
+        return;
+      }
+    }
+
+    if (lowSignal && timeSinceChange > 60 && mood !== "empty") {
+      mood = "empty";
+      stability = Math.max(stability * 0.5, strength);
+      this.worldMoodMemory = { mood, stability, lastChangeAt: now, lastSeenAt: hasFreshSignal ? now : lastSeenAt };
+      this.worldMoodTrend = stability > prevStability + 0.05 ? "rising" : stability < prevStability - 0.05 ? "fading" : "steady";
+      return;
+    }
+
+    this.worldMoodMemory = {
+      mood,
+      stability: Math.min(1, stability + strength * 0.12),
+      lastChangeAt: memory.lastChangeAt,
+      lastSeenAt: hasFreshSignal ? now : lastSeenAt
+    };
+    this.worldMoodTrend = stability > prevStability + 0.05 ? "rising" : stability < prevStability - 0.05 ? "fading" : "steady";
+  }
+
+  private getWorldMoodSnapshot(now: number) {
+    if (!this.worldMoodMemory) {
+      return { mood: "empty", confidence: 0, sinceSeconds: 0, signalQuality: "stale", trend: "steady" } as MoodSnapshot;
+    }
+
+    const timeSinceSeen = now - (this.worldMoodMemory.lastSeenAt ?? 0);
+    const signalQuality =
+      timeSinceSeen > 150
+        ? "stale"
+        : timeSinceSeen > 90
+        ? "fragile"
+        : this.worldMoodMemory.stability > 0.7
+        ? "strong"
+        : this.worldMoodMemory.stability > 0.35
+        ? "steady"
+        : "fragile";
+
+    return {
+      mood: this.worldMoodMemory.mood,
+      confidence: this.worldMoodMemory.stability,
+      sinceSeconds: now - this.worldMoodMemory.lastChangeAt,
+      signalQuality,
+      trend: this.worldMoodTrend
+    } as MoodSnapshot;
+  }
+
   private buildNarrativeLines(
     selfMood: MoodSnapshot,
     resonance: ResonanceState | undefined,
     graphSummary: { concepts: ConceptSummary[]; edges: EdgeSummary[] } | undefined,
     conceptEchoes?: ConceptEcho[],
     ambientZones?: FrameAmbientZone[],
-    atmosphere?: FrameAtmosphere
+    atmosphere?: FrameAtmosphere,
+    worldMoodSnapshot?: MoodSnapshot
   ): string[] {
     const lines: string[] = [];
 
@@ -860,7 +1031,11 @@ export class CoreRealityKernel {
     }
 
     if (graphSummary) {
-      const mood = this.classifyWorldMood(graphSummary);
+      const mood = worldMoodSnapshot?.mood ?? this.classifyWorldMood(graphSummary);
+      const confidence = worldMoodSnapshot?.confidence ?? 0;
+      const worldMoodAge = worldMoodSnapshot?.sinceSeconds ?? 0;
+      const signalQuality = worldMoodSnapshot?.signalQuality;
+      const trend = worldMoodSnapshot?.trend;
       const strongest = graphSummary.concepts[0]?.label;
       const second = graphSummary.concepts[1]?.label;
 
@@ -873,6 +1048,23 @@ export class CoreRealityKernel {
           lines.push(`The world remembers mostly ${strongest}.`);
         } else {
           lines.push(`The world mood is ${mood}.`);
+        }
+
+        if (confidence > 0.15) {
+          const tone =
+            confidence > 0.7 ? "steady" : confidence > 0.35 ? "forming" : "fragile";
+          const durationLabel =
+            worldMoodAge > 120 ? "long-held" : worldMoodAge > 30 ? "settling" : "newly forming";
+          lines.push(
+            `World feeling is ${tone} (${(confidence * 100).toFixed(0)}% signal, ${durationLabel}).`
+          );
+        } else if (signalQuality === "stale") {
+          lines.push("World feeling is faint — the shard waits for new memories.");
+        }
+
+        if (trend && trend !== "steady") {
+          const trendText = trend === "rising" ? "growing clearer" : "dissolving";
+          lines.push(`World feeling is ${trendText}.`);
         }
       }
     }
@@ -1493,8 +1685,9 @@ export class CoreRealityKernel {
     const conceptEchoes = this.buildConceptEchoesAround(position, 140, 90, 6);
     const resonance = this.buildLocalResonance(position);
     const ambientZones = this.buildAmbientZonesAround(position, 200, 4);
-    const graphSummary = this.buildGlobalGraphSummary();
-    const worldMood = this.classifyWorldMood(graphSummary);
+    const graphSummary = this.globalGraphSummary || this.buildGlobalGraphSummary();
+    const worldMoodSnapshot = this.getWorldMoodSnapshot(this.world.timeSeconds);
+    const worldMood = worldMoodSnapshot.mood;
     const atmosphere = this.buildAtmosphereCue(position, ambientZones, worldMood);
     const selfMood = this.classifyMoodForEntity(entityId, resonance);
     const narrative = this.buildNarrativeLines(
@@ -1503,7 +1696,8 @@ export class CoreRealityKernel {
       graphSummary,
       conceptEchoes,
       ambientZones,
-      atmosphere
+      atmosphere,
+      worldMoodSnapshot
     );
     const chatLog = this.buildChatLogAround(position, 120, 12);
 
@@ -1530,6 +1724,10 @@ export class CoreRealityKernel {
       atmosphere,
       narrative,
       worldMood,
+      worldMoodConfidence: worldMoodSnapshot.confidence,
+      worldMoodSince: worldMoodSnapshot.sinceSeconds,
+      worldMoodSignalQuality: worldMoodSnapshot.signalQuality,
+      worldMoodTrend: worldMoodSnapshot.trend,
       chatLog
     };
 
@@ -1577,6 +1775,8 @@ export class CoreRealityKernel {
     this.updateConcepts();
     this.updateChatMessages();
     this.updateThoughtGraphCooccurrences();
+    this.decayGraphMemory(dt);
+    this.updateWorldMoodMemory();
     this.resolveInteractions();
     this.emitTickSummary();
   }
