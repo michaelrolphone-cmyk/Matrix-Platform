@@ -203,9 +203,15 @@ interface EdgeSummary {
   weight: number;
 }
 
+interface ResonanceFlow {
+  direction: Vec3;
+  magnitude: number;
+}
+
 interface ResonanceState {
   local: number;
   labels: { [label: string]: number };
+  flow?: ResonanceFlow;
 }
 
 interface PersistedGraphNode {
@@ -1560,13 +1566,35 @@ export class CoreRealityKernel {
     const concepts = this.buildConceptsAround(position, 60);
     const labels: { [label: string]: number } = {};
     let sum = 0;
+    const flowVector: Vec3 = [0, 0, 0];
 
     for (const c of concepts) {
       labels[c.label] = (labels[c.label] || 0) + c.strength;
       sum += c.strength;
+
+      const dx = c.relativePosition[0];
+      const dy = c.relativePosition[1];
+      const dz = c.relativePosition[2];
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (dist > 0.001) {
+        const inv = 1 / dist;
+        flowVector[0] += dx * inv * c.strength;
+        flowVector[1] += dy * inv * c.strength;
+        flowVector[2] += dz * inv * c.strength;
+      }
     }
 
-    return { local: sum, labels };
+    const mag = Math.sqrt(
+      flowVector[0] * flowVector[0] +
+        flowVector[1] * flowVector[1] +
+        flowVector[2] * flowVector[2]
+    );
+    const flow =
+      mag > 0.0001
+        ? { direction: [flowVector[0] / mag, flowVector[1] / mag, flowVector[2] / mag] as Vec3, magnitude: mag }
+        : undefined;
+
+    return { local: sum, labels, flow };
   }
 
   private buildAmbientZonesAround(

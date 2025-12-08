@@ -248,6 +248,32 @@
   const entrainmentText = document.getElementById("entrainmentText");
   const canvas = document.getElementById("view");
 
+  function formatDuration(seconds) {
+    if (seconds === null || seconds === undefined || Number.isNaN(seconds)) return null;
+    if (seconds < 60) return `${seconds.toFixed(0)}s`;
+    const mins = seconds / 60;
+    return `${mins.toFixed(mins >= 10 ? 0 : 1)}m`;
+  }
+
+  function directionFromVector(vec) {
+    if (!vec || vec.length < 2) return null;
+    const angle = Math.atan2(vec[2] || 0, vec[0] || 0);
+    const deg = (angle * 180) / Math.PI;
+    const normalized = (deg + 360) % 360;
+    const sectors = [
+      "E",
+      "NE",
+      "N",
+      "NW",
+      "W",
+      "SW",
+      "S",
+      "SE"
+    ];
+    const idx = Math.round(normalized / 45) % 8;
+    return sectors[idx];
+  }
+
   // ---------------------------
   // Three.js scene setup
   // ---------------------------
@@ -334,7 +360,8 @@
   scene.add(dirLight);
 
   // Ground grid
-  const groundGeo = new THREE.PlaneGeometry(400, 400, 40, 40);
+  const groundGeo = new THREE.PlaneGeometry(400, 400, 80, 80);
+  groundGeo.rotateX(-Math.PI / 2);
   const groundMat = new THREE.MeshStandardMaterial({
     color: 0x171f32,
     metalness: 0.08,
@@ -356,15 +383,14 @@
   const pos = groundGeo.attributes.position;
   for (let i = 0; i < pos.count; i++) {
     const x = pos.getX(i);
-    const z = pos.getY(i);
+    const z = pos.getZ(i);
     const height = terrainHeight(x, z);
-    pos.setZ(i, height);
+    pos.setY(i, height);
   }
   pos.needsUpdate = true;
   groundGeo.computeVertexNormals();
 
   const ground = new THREE.Mesh(groundGeo, groundMat);
-  ground.rotation.x = -Math.PI / 2;
   scene.add(ground);
 
   const gridHelper = new THREE.GridHelper(200, 40, 0x2f4a7a, 0x2f4a7a);
@@ -441,7 +467,7 @@
       const px = position.getX(i);
       const py = position.getY(i);
       const worldX = cx + px;
-      const worldZ = cz - py; // plane is rotated -90deg around X
+      const worldZ = cz + py; // plane is rotated -90deg around X; keep field aligned with travel
       const height = terrainHeight(worldX, worldZ) + 0.05;
       position.setZ(i, height);
     }
@@ -714,10 +740,11 @@
     const worldMoodConfidence = frame?.worldMoodConfidence || 0;
     const foamEnergy = frame?.atmosphere?.foamEnergy || 0;
     const time = frame?.timeSeconds || 0;
+    const flowCharge = Math.min(1, (frame?.resonance?.flow?.magnitude || 0) * 0.35);
 
-    const beat = 3 + Math.min(9, resonance * 0.6 + foamEnergy * 2 + worldMoodConfidence * 5);
-    const carrier = 140 + Math.min(220, resonance * 70 + foamEnergy * 120 + worldMoodConfidence * 80);
-    const depth = Math.min(0.08, 0.01 + resonance * 0.025 + foamEnergy * 0.015 + worldMoodConfidence * 0.02);
+    const beat = 3 + Math.min(9, resonance * 0.6 + foamEnergy * 2 + worldMoodConfidence * 5 + flowCharge * 4);
+    const carrier = 140 + Math.min(220, resonance * 70 + foamEnergy * 120 + worldMoodConfidence * 80 + flowCharge * 60);
+    const depth = Math.min(0.08, 0.01 + resonance * 0.025 + foamEnergy * 0.015 + worldMoodConfidence * 0.02 + flowCharge * 0.015);
 
     const leftFreq = Math.max(40, carrier - beat * 0.5);
     const rightFreq = Math.max(40, carrier + beat * 0.5);
@@ -731,7 +758,7 @@
     entrainmentAudio.rightGain.gain.setTargetAtTime(rightGain, ctx.currentTime, 0.5);
 
     if (entrainmentPulse) {
-      const pulseStrength = Math.min(1, depth * 12 + resonance * 0.08 + foamEnergy * 0.06);
+      const pulseStrength = Math.min(1, depth * 12 + resonance * 0.08 + foamEnergy * 0.06 + flowCharge * 0.12);
       const scale = 1 + pulseStrength * 0.18;
       const paletteColor = lastBasePalette?.dirColor?.getHexString?.()
         ? `#${lastBasePalette.dirColor.getHexString()}`
@@ -1148,6 +1175,12 @@
     for (const [label, value] of labelEntries) {
       parts.push(`${label}: ${value.toFixed(2)}`);
     }
+
+    if (resonance.flow && resonance.flow.magnitude > 0.01) {
+      const dir = directionFromVector(resonance.flow.direction);
+      const flowLabel = dir ? `${dir.toLowerCase()} drift` : "field drift";
+      parts.push(`${flowLabel} ${resonance.flow.magnitude.toFixed(2)}`);
+    }
     resonanceEl.textContent = parts.join(" · ");
   }
 
@@ -1428,8 +1461,17 @@
         " s · tick = " +
         lastFrame.tick;
 
-      const moodText = self.mood ? `mood: ${self.mood}` : "mood: neutral";
-      moodEl.textContent = moodText;
+      const moodParts = [self.mood ? `mood: ${self.mood}` : "mood: neutral"];
+      const moodConfidence = typeof self.moodConfidence === "number" ? self.moodConfidence : null;
+      const moodSince = typeof self.moodSince === "number" ? self.moodSince : null;
+      if (moodConfidence !== null) {
+        moodParts.push(`${(moodConfidence * 100).toFixed(0)}% steady`);
+      }
+      if (moodSince !== null) {
+        const held = formatDuration(moodSince);
+        if (held) moodParts.push(`${held} held`);
+      }
+      moodEl.textContent = moodParts.join(" · ");
 
       const wm = worldMood || "mixed / unknown";
       const wmConfidence = typeof lastFrame.worldMoodConfidence === "number"
@@ -1444,7 +1486,8 @@
       }
       if (wmAge !== null) {
         const ageLabel = wmAge > 120 ? "steady" : wmAge > 40 ? "settling" : "forming";
-        wmParts.push(`${ageLabel} ${wmAge.toFixed(0)}s`);
+        const duration = formatDuration(wmAge);
+        wmParts.push(`${ageLabel} ${duration || `${wmAge.toFixed(0)}s`}`);
       }
       if (wmSignal) {
         wmParts.push(`quality ${wmSignal}`);
