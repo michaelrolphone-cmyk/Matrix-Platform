@@ -339,7 +339,12 @@ Treat all conceptual systems (foam, concepts, graph, resonance) as core features
 
 Your final goal is to grow this shard into a full simulated reality engine.
 
-7. FINAL NOTE TO THE USER
+7. SESSION CONTINUITY LOG
+
+- Added mood memory inside the CoreRealityKernel so per-entity mood classification no longer flickers on small resonance changes. Moods now change only when the signal is strong enough or has persisted, reinforcing embodiment and persistence in the shard.
+- Enhanced mood memory to track confidence and lifetime, decaying stale impressions and exposing mood confidence to perceptual frames and narrative text for a more embodied HUD.
+
+8. FINAL NOTE TO THE USER
 
 This file is designed to ensure that the work continues seamlessly even if you:
 

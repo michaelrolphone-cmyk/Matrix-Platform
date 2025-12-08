@@ -291,6 +291,14 @@ interface FrameSelfState {
   name?: string;
   color?: string;
   mood?: string;
+  moodConfidence?: number;
+  moodSince?: number;
+}
+
+interface MoodSnapshot {
+  mood: string;
+  confidence: number;
+  sinceSeconds: number;
 }
 
 interface FrameAmbientZone {
@@ -383,6 +391,12 @@ export class CoreRealityKernel {
 
   // Player-facing identity overlays
   private identitySignatures: Map<EntityId, IdentitySignature> = new Map();
+
+  // Mood memory to dampen sudden oscillations
+  private moodMemory: Map<
+    EntityId,
+    { mood: string; lastChangeAt: number; stability: number; lastSeenAt: number }
+  > = new Map();
 
   constructor(rdlPath: string) {
     this.rdl = this.loadRdl(rdlPath);
@@ -810,7 +824,7 @@ export class CoreRealityKernel {
   }
 
   private buildNarrativeLines(
-    selfMood: string,
+    selfMood: MoodSnapshot,
     resonance: ResonanceState | undefined,
     graphSummary: { concepts: ConceptSummary[]; edges: EdgeSummary[] } | undefined,
     conceptEchoes?: ConceptEcho[],
@@ -819,8 +833,15 @@ export class CoreRealityKernel {
   ): string[] {
     const lines: string[] = [];
 
-    if (selfMood && selfMood !== "neutral") {
-      lines.push(`You feel ${selfMood}.`);
+    if (selfMood && selfMood.mood && selfMood.mood !== "neutral") {
+      const confidenceLabel =
+        selfMood.confidence >= 0.75
+          ? "strong"
+          : selfMood.confidence >= 0.4
+          ? "steady"
+          : "fragile";
+      const duration = selfMood.sinceSeconds > 12 ? "lingering" : "fresh";
+      lines.push(`You feel ${selfMood.mood} (${confidenceLabel}, ${duration}).`);
     }
 
     if (resonance && resonance.local > 0.1) {
@@ -1350,6 +1371,89 @@ export class CoreRealityKernel {
     return "mixed";
   }
 
+  private estimateMoodStrength(resonance: ResonanceState): number {
+    const labels = resonance.labels || {};
+    const curiosity = labels["curiosity"] || 0;
+    const danger = labels["danger"] || 0;
+    const calm = labels["calm"] || 0;
+
+    return Math.max(curiosity, danger, calm, Math.abs(resonance.local));
+  }
+
+  private cleanupMoodMemory(maxAgeSeconds: number = 300) {
+    const now = this.world.timeSeconds;
+    for (const [entityId, entry] of this.moodMemory.entries()) {
+      const stillExists = this.world.components.transform.has(entityId);
+      const stale = now - entry.lastSeenAt > maxAgeSeconds;
+      if (!stillExists || stale) {
+        this.moodMemory.delete(entityId);
+      }
+    }
+  }
+
+  private classifyMoodForEntity(entityId: EntityId, resonance: ResonanceState): MoodSnapshot {
+    const baseMood = this.classifyMood(resonance);
+    const moodStrength = this.estimateMoodStrength(resonance);
+    const now = this.world.timeSeconds;
+    const memory = this.moodMemory.get(entityId);
+
+    if (!memory) {
+      const stability = Math.min(1, moodStrength);
+      this.moodMemory.set(entityId, {
+        mood: baseMood,
+        lastChangeAt: now,
+        stability,
+        lastSeenAt: now
+      });
+      return { mood: baseMood, confidence: stability, sinceSeconds: 0 };
+    }
+
+    const timeSinceChange = now - memory.lastChangeAt;
+    const lowSignal = moodStrength < 0.05;
+    let mood = memory.mood;
+    let stability = Math.max(memory.stability * (lowSignal ? 0.9 : 0.95), moodStrength);
+
+    if (baseMood !== memory.mood) {
+      const allowChange = stability >= 0.2 || timeSinceChange > 8 || baseMood === "mixed";
+
+      if (allowChange) {
+        mood = baseMood;
+        stability = Math.max(stability, moodStrength);
+        this.moodMemory.set(entityId, {
+          mood,
+          lastChangeAt: now,
+          stability,
+          lastSeenAt: now
+        });
+        return { mood, confidence: Math.min(1, stability), sinceSeconds: 0 };
+      }
+    }
+
+    if (lowSignal && mood !== "neutral" && timeSinceChange > 12) {
+      mood = "neutral";
+      stability = Math.max(stability * 0.6, moodStrength);
+      this.moodMemory.set(entityId, {
+        mood,
+        lastChangeAt: now,
+        stability,
+        lastSeenAt: now
+      });
+      return { mood, confidence: Math.min(1, stability), sinceSeconds: 0 };
+    }
+
+    // reinforce current mood memory while tracking last seen time
+    const reinforcedStability = Math.min(1, lowSignal ? stability : stability + 0.05 * moodStrength);
+
+    this.moodMemory.set(entityId, {
+      mood,
+      lastChangeAt: memory.lastChangeAt,
+      stability: reinforcedStability,
+      lastSeenAt: now
+    });
+
+    return { mood, confidence: reinforcedStability, sinceSeconds: timeSinceChange };
+  }
+
 
   // ---------------------------
   // Perception
@@ -1392,7 +1496,7 @@ export class CoreRealityKernel {
     const graphSummary = this.buildGlobalGraphSummary();
     const worldMood = this.classifyWorldMood(graphSummary);
     const atmosphere = this.buildAtmosphereCue(position, ambientZones, worldMood);
-    const selfMood = this.classifyMood(resonance);
+    const selfMood = this.classifyMoodForEntity(entityId, resonance);
     const narrative = this.buildNarrativeLines(
       selfMood,
       resonance,
@@ -1412,7 +1516,9 @@ export class CoreRealityKernel {
         velocity: [...velocity] as Vec3,
         name: selfSignature?.name,
         color: selfSignature?.color,
-        mood: selfMood
+        mood: selfMood.mood,
+        moodConfidence: selfMood.confidence,
+        moodSince: selfMood.sinceSeconds
       },
       nearbyEntities,
       foamPatch,
@@ -1464,6 +1570,7 @@ export class CoreRealityKernel {
     this.world.tick += 1;
     this.world.timeSeconds += dt;
 
+    this.cleanupMoodMemory();
     this.updateMinds(dt);
     this.updatePhysics(dt);
     this.updateFoam(dt);
