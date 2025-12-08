@@ -157,7 +157,7 @@
       <p id="statusText">Connecting...</p>
       <p class="muted" id="tickText">t = -- s · tick = --</p>
       <p class="muted" id="helpText">
-        Move: W/A/S/D · Inject: 1=curiosity, 2=danger, 3=calm · Chat: Enter
+        Move: W/A/S/D · View: V toggle first-person (mouse-look) · Inject: 1=curiosity, 2=danger, 3=calm · Chat: Enter
       </p>
     </div>
     <div class="panel">
@@ -314,6 +314,26 @@
     emissiveIntensity: 0.25,
     side: THREE.DoubleSide
   });
+
+  function terrainHeight(x, z) {
+    const nx = x * 0.02;
+    const nz = z * 0.02;
+    const ridge = Math.sin(Math.sqrt(nx * nx + nz * nz) * 0.8) * 3.2;
+    const dunes = (Math.sin(nx * 1.7) + Math.cos(nz * 1.3)) * 2.4;
+    const micro = Math.sin(nx * 4.6 + nz * 3.2) * 0.8;
+    return ridge + dunes + micro;
+  }
+
+  const pos = groundGeo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    const z = pos.getY(i);
+    const height = terrainHeight(x, z);
+    pos.setZ(i, height);
+  }
+  pos.needsUpdate = true;
+  groundGeo.computeVertexNormals();
+
   const ground = new THREE.Mesh(groundGeo, groundMat);
   ground.rotation.x = -Math.PI / 2;
   scene.add(ground);
@@ -338,12 +358,68 @@
     blending: THREE.AdditiveBlending,
     side: THREE.DoubleSide
   });
-  const resonanceGeom = new THREE.PlaneGeometry(1, 1);
+  let resonanceGeom = new THREE.PlaneGeometry(1, 1, 1, 1);
   const resonanceField = new THREE.Mesh(resonanceGeom, resonanceMaterial);
   resonanceField.rotation.x = -Math.PI / 2;
-  resonanceField.position.y = 0.08;
   resonanceField.renderOrder = 2;
   scene.add(resonanceField);
+
+  const resonanceState = {
+    segmentsX: 1,
+    segmentsY: 1,
+    planeWidth: 1,
+    planeHeight: 1
+  };
+
+  function rebuildResonanceGeometry(width, height, cellSize) {
+    const segmentsX = Math.max(1, Math.floor(width));
+    const segmentsY = Math.max(1, Math.floor(height));
+    const planeWidth = Math.max(1, width * cellSize);
+    const planeHeight = Math.max(1, height * cellSize);
+
+    if (
+      resonanceGeom &&
+      resonanceState.segmentsX === segmentsX &&
+      resonanceState.segmentsY === segmentsY &&
+      Math.abs(resonanceState.planeWidth - planeWidth) < 0.001 &&
+      Math.abs(resonanceState.planeHeight - planeHeight) < 0.001
+    ) {
+      return;
+    }
+
+    if (resonanceField.geometry && resonanceField.geometry.dispose) {
+      resonanceField.geometry.dispose();
+    }
+
+    resonanceGeom = new THREE.PlaneGeometry(planeWidth, planeHeight, segmentsX, segmentsY);
+    resonanceField.geometry = resonanceGeom;
+    resonanceState.segmentsX = segmentsX;
+    resonanceState.segmentsY = segmentsY;
+    resonanceState.planeWidth = planeWidth;
+    resonanceState.planeHeight = planeHeight;
+  }
+
+  function projectResonanceOntoTerrain(centerPosition) {
+    if (!resonanceField.geometry) return;
+    const geom = resonanceField.geometry;
+    const position = geom.attributes.position;
+    if (!position) return;
+
+    const cx = centerPosition?.x || 0;
+    const cz = centerPosition?.z || 0;
+
+    for (let i = 0; i < position.count; i++) {
+      const px = position.getX(i);
+      const py = position.getY(i);
+      const worldX = cx + px;
+      const worldZ = cz - py; // plane is rotated -90deg around X
+      const height = terrainHeight(worldX, worldZ) + 0.05;
+      position.setZ(i, height);
+    }
+
+    position.needsUpdate = true;
+    geom.computeVertexNormals();
+  }
 
   // Environment mood palettes (world mood -> lighting/fog)
   function makePalette({
@@ -599,8 +675,9 @@
     resonanceTexture.needsUpdate = true;
     const fieldGlow = Math.min(0.35, peak * 0.55);
     resonanceMaterial.opacity = Math.min(0.9, 0.45 + fieldGlow + localField * 0.08);
-    resonanceField.scale.set(width * cellSize, height * cellSize, 1);
-    resonanceField.position.set(centerPosition.x, resonanceField.position.y, centerPosition.z);
+    rebuildResonanceGeometry(width, height, cellSize);
+    projectResonanceOntoTerrain(centerPosition);
+    resonanceField.position.set(centerPosition.x, 0, centerPosition.z);
   }
 
   // Self avatar
@@ -731,6 +808,8 @@
   // ---------------------------
 
   const keys = { w: false, a: false, s: false, d: false };
+  let cameraTarget = new THREE.Vector3(0, 0, 0);
+  let cameraViewDir = new THREE.Vector3(0, -0.6, -1).normalize();
 
   function isChatFocused() {
     return document.activeElement === chatInput;
@@ -741,6 +820,18 @@
     "2": "danger",
     "3": "calm"
   };
+
+  let firstPerson = false;
+  let pointerLocked = false;
+  let cameraYaw = -Math.PI / 4;
+  let cameraPitch = -0.3;
+  const LOOK_SENSITIVITY = 0.0024;
+
+  function syncAnglesFromView(dir) {
+    const d = dir.clone().normalize();
+    cameraYaw = Math.atan2(d.x, -d.z);
+    cameraPitch = Math.asin(THREE.MathUtils.clamp(d.y, -1, 1));
+  }
 
   window.addEventListener("keydown", (e) => {
     const k = e.key.toLowerCase();
@@ -765,6 +856,21 @@
       return;
     }
 
+    // Toggle first-person view
+    if (k === "v") {
+      firstPerson = !firstPerson;
+      if (firstPerson) {
+        syncAnglesFromView(cameraViewDir);
+        if (document.pointerLockElement !== canvas) {
+          canvas.requestPointerLock();
+        }
+      } else if (document.pointerLockElement === canvas) {
+        document.exitPointerLock();
+      }
+      e.preventDefault();
+      return;
+    }
+
     // Concept injection keys
     if (conceptLabels[e.key] && socket && socket.readyState === WebSocket.OPEN) {
       socket.send(
@@ -785,6 +891,26 @@
       keys[k] = false;
       e.preventDefault();
     }
+  });
+
+  canvas.addEventListener("click", () => {
+    if (firstPerson && !pointerLocked) {
+      canvas.requestPointerLock();
+    }
+  });
+
+  document.addEventListener("pointerlockchange", () => {
+    pointerLocked = document.pointerLockElement === canvas;
+  });
+
+  window.addEventListener("mousemove", (e) => {
+    if (!firstPerson || !pointerLocked) return;
+    cameraYaw -= e.movementX * LOOK_SENSITIVITY;
+    cameraPitch = THREE.MathUtils.clamp(
+      cameraPitch - e.movementY * LOOK_SENSITIVITY,
+      -Math.PI / 2 + 0.14,
+      Math.PI / 2 - 0.14
+    );
   });
 
   function sendChatMessage() {
@@ -1036,8 +1162,6 @@
   // ---------------------------
   // Animation loop
   // ---------------------------
-  let cameraTarget = new THREE.Vector3(0, 0, 0);
-
   function animate() {
     requestAnimationFrame(animate);
 
@@ -1054,6 +1178,7 @@
       // World-space position of the player
       const sx = self.position[0] * WORLD_SCALE;
       const sz = self.position[2] * WORLD_SCALE;
+      const groundY = terrainHeight(sx, sz);
 
       const selfColor = self.color || DEFAULT_SELF_COLOR;
       if (selfBody.material && "color" in selfBody.material) {
@@ -1065,7 +1190,7 @@
       updateNameSprite(selfNameTag, self.name || "you", selfColor);
 
       // Place the avatar at its world position
-      selfGroup.position.set(sx, 0, sz);
+      selfGroup.position.set(sx, groundY, sz);
 
       // Update halo based on local resonance
       const r = resonance ? resonance.local : 0;
@@ -1096,7 +1221,8 @@
 
           const targetX = sx + dx;
           const targetZ = sz + dz;
-          visual.target.set(targetX, visual.mesh.position.y, targetZ);
+          const targetY = terrainHeight(targetX, targetZ) + 1.0;
+          visual.target.set(targetX, targetY, targetZ);
           if (!visual.initialized) {
             visual.mesh.position.copy(visual.target);
             visual.label.position.set(
@@ -1126,13 +1252,36 @@
         }
       }
 
-      // Smooth camera to hover *over the player*
-      const desiredCamPos = new THREE.Vector3(sx, 30, sz + 30);
-      camera.position.lerp(desiredCamPos, 0.05);
+      if (firstPerson) {
+        const targetDir = new THREE.Vector3(
+          Math.sin(cameraYaw) * Math.cos(cameraPitch),
+          Math.sin(cameraPitch),
+          -Math.cos(cameraYaw) * Math.cos(cameraPitch)
+        ).normalize();
+        cameraViewDir.lerp(targetDir, 0.35);
 
-      const desiredTarget = new THREE.Vector3(sx, 1.5, sz);
-      cameraTarget.lerp(desiredTarget, 0.1);
-      camera.lookAt(cameraTarget);
+        const desiredCamPos = new THREE.Vector3(sx, groundY + 1.9, sz);
+        camera.position.lerp(desiredCamPos, 0.15);
+
+        const fpTarget = new THREE.Vector3()
+          .copy(camera.position)
+          .add(cameraViewDir.clone().normalize().multiplyScalar(10));
+        cameraTarget.lerp(fpTarget, 0.25);
+        camera.lookAt(cameraTarget);
+      } else {
+        const currentDir = new THREE.Vector3().subVectors(cameraTarget, camera.position);
+        if (currentDir.lengthSq() > 0.0001) {
+          cameraViewDir.lerp(currentDir.normalize(), 0.2);
+          syncAnglesFromView(cameraViewDir);
+        }
+
+        const desiredCamPos = new THREE.Vector3(sx, groundY + 30, sz + 30);
+        camera.position.lerp(desiredCamPos, 0.05);
+
+        const desiredTarget = new THREE.Vector3(sx, groundY + 1.5, sz);
+        cameraTarget.lerp(desiredTarget, 0.1);
+        camera.lookAt(cameraTarget);
+      }
 
       // HUD text
       tickEl.textContent =
