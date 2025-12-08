@@ -10,7 +10,7 @@
       padding: 0;
       height: 100%;
       overflow: hidden;
-      background: radial-gradient(circle at top, #202640 0, #050510 55%, #000 100%);
+      background: radial-gradient(circle at 50% 0%, #1f2f5a 0, #0b1228 48%, #050912 100%);
       color: #e0ecff;
       font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
@@ -30,8 +30,8 @@
       pointer-events: none;
     }
     .panel {
-      background: rgba(5, 8, 20, 0.82);
-      border: 1px solid rgba(140, 190, 255, 0.3);
+      background: rgba(10, 14, 30, 0.84);
+      border: 1px solid rgba(140, 190, 255, 0.4);
       border-radius: 8px;
       padding: 8px 10px;
       font-size: 12px;
@@ -283,38 +283,67 @@
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
   renderer.setPixelRatio(window.devicePixelRatio || 1);
   renderer.setSize(window.innerWidth, window.innerHeight);
-  renderer.setClearColor(0x050510);
+  renderer.setClearColor(0x0a1020);
+  renderer.toneMappingExposure = 1.2;
 
   const scene = new THREE.Scene();
-  scene.fog = new THREE.FogExp2(0x050510, 0.018);
+  scene.fog = new THREE.FogExp2(0x0b1224, 0.012);
 
   const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 500);
   camera.position.set(0, 40, 40);
   camera.lookAt(0, 0, 0);
 
   // Lights
-  const hemiLight = new THREE.HemisphereLight(0x88bbff, 0x202030, 0.8);
+  const hemiLight = new THREE.HemisphereLight(0x88bbff, 0x222a44, 1.0);
   scene.add(hemiLight);
 
-  const dirLight = new THREE.DirectionalLight(0xffffff, 0.6);
+  const ambientLight = new THREE.AmbientLight(0x6f81c7, 0.35);
+  scene.add(ambientLight);
+
+  const dirLight = new THREE.DirectionalLight(0xffffff, 0.72);
   dirLight.position.set(20, 40, 10);
   scene.add(dirLight);
 
   // Ground grid
   const groundGeo = new THREE.PlaneGeometry(400, 400, 40, 40);
   const groundMat = new THREE.MeshStandardMaterial({
-    color: 0x111522,
-    metalness: 0.1,
-    roughness: 0.9,
+    color: 0x171f32,
+    metalness: 0.08,
+    roughness: 0.8,
+    emissive: new THREE.Color(0x0c162a),
+    emissiveIntensity: 0.25,
     side: THREE.DoubleSide
   });
   const ground = new THREE.Mesh(groundGeo, groundMat);
   ground.rotation.x = -Math.PI / 2;
   scene.add(ground);
 
-  const gridHelper = new THREE.GridHelper(200, 40, 0x223355, 0x223355);
+  const gridHelper = new THREE.GridHelper(200, 40, 0x2f4a7a, 0x2f4a7a);
   gridHelper.position.y = 0.01;
   scene.add(gridHelper);
+
+  // Resonance field overlay (heatmap projected onto terrain)
+  const resonanceCanvas = document.createElement("canvas");
+  resonanceCanvas.width = 256;
+  resonanceCanvas.height = 256;
+  const resonanceCtx = resonanceCanvas.getContext("2d");
+  const resonanceTexture = new THREE.CanvasTexture(resonanceCanvas);
+  resonanceTexture.minFilter = THREE.LinearFilter;
+  resonanceTexture.magFilter = THREE.LinearFilter;
+  const resonanceMaterial = new THREE.MeshBasicMaterial({
+    map: resonanceTexture,
+    transparent: true,
+    opacity: 0.0,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    side: THREE.DoubleSide
+  });
+  const resonanceGeom = new THREE.PlaneGeometry(1, 1);
+  const resonanceField = new THREE.Mesh(resonanceGeom, resonanceMaterial);
+  resonanceField.rotation.x = -Math.PI / 2;
+  resonanceField.position.y = 0.08;
+  resonanceField.renderOrder = 2;
+  scene.add(resonanceField);
 
   // Environment mood palettes (world mood -> lighting/fog)
   function makePalette({
@@ -342,15 +371,15 @@
   }
 
   const defaultPalette = makePalette({
-    fogColor: 0x050510,
-    fogDensity: 0.018,
-    groundColor: 0x111522,
-    skyColor: 0x88bbff,
-    hemiGround: 0x202030,
-    hemiIntensity: 0.8,
+    fogColor: 0x0b1224,
+    fogDensity: 0.012,
+    groundColor: 0x171f32,
+    skyColor: 0x9ac8ff,
+    hemiGround: 0x223044,
+    hemiIntensity: 1.0,
     dirColor: 0xffffff,
-    dirIntensity: 0.6,
-    background: 0x050510
+    dirIntensity: 0.75,
+    background: 0x0a1020
   });
 
   const moodPalettes = [
@@ -358,42 +387,42 @@
       matches: ["danger", "tense", "anxious", "threat"],
       palette: makePalette({
         fogColor: 0x12060c,
-        fogDensity: 0.026,
-        groundColor: 0x1c0f18,
-        skyColor: 0x6a2c46,
-        hemiGround: 0x1c1a26,
-        hemiIntensity: 0.7,
+        fogDensity: 0.02,
+        groundColor: 0x21101c,
+        skyColor: 0x8c3a56,
+        hemiGround: 0x251c2c,
+        hemiIntensity: 0.9,
         dirColor: 0xff5c7a,
-        dirIntensity: 0.45,
-        background: 0x0a050a
+        dirIntensity: 0.65,
+        background: 0x0f070f
       })
     },
     {
       matches: ["calm", "settled"],
       palette: makePalette({
         fogColor: 0x0a1418,
-        fogDensity: 0.015,
-        groundColor: 0x0f1e24,
-        skyColor: 0x6cc6ff,
-        hemiGround: 0x16242c,
-        hemiIntensity: 0.9,
+        fogDensity: 0.011,
+        groundColor: 0x122430,
+        skyColor: 0x7ed5ff,
+        hemiGround: 0x1c2e36,
+        hemiIntensity: 1.1,
         dirColor: 0xb8ffe6,
-        dirIntensity: 0.55,
-        background: 0x0a1116
+        dirIntensity: 0.68,
+        background: 0x0b1420
       })
     },
     {
       matches: ["curious", "exploratory", "mixed"],
       palette: makePalette({
         fogColor: 0x0d111d,
-        fogDensity: 0.02,
-        groundColor: 0x131a28,
-        skyColor: 0x9ac3ff,
-        hemiGround: 0x1f2434,
-        hemiIntensity: 0.85,
+        fogDensity: 0.014,
+        groundColor: 0x182236,
+        skyColor: 0xadd2ff,
+        hemiGround: 0x24304a,
+        hemiIntensity: 1.0,
         dirColor: 0x7af7d0,
-        dirIntensity: 0.65,
-        background: 0x080c18
+        dirIntensity: 0.78,
+        background: 0x0b1322
       })
     }
   ];
@@ -507,6 +536,71 @@
       moodTint.style.background = `radial-gradient(circle at 70% 14%, ${skyHex}33, transparent 55%)`;
       moodTint.style.opacity = overlayStrength.toFixed(2);
     }
+  }
+
+  function paintResonanceField(foamPatch, resonance, timeSeconds, centerPosition) {
+    if (!resonanceCtx || !resonanceMaterial) return;
+    if (!foamPatch || !foamPatch.values || !foamPatch.width || !foamPatch.height) {
+      resonanceMaterial.opacity = Math.max(0, resonanceMaterial.opacity - 0.04);
+      return;
+    }
+
+    const { width, height, cellSize, values } = foamPatch;
+    const cw = resonanceCanvas.width;
+    const ch = resonanceCanvas.height;
+    const cellW = cw / width;
+    const cellH = ch / height;
+    const time = timeSeconds || 0;
+
+    let peak = 0;
+    for (const row of values) {
+      if (!Array.isArray(row)) continue;
+      for (const v of row) {
+        if (v > peak) peak = v;
+      }
+    }
+    peak = Math.max(peak, 0.001);
+
+    resonanceCtx.globalCompositeOperation = "source-over";
+    resonanceCtx.fillStyle = "rgba(8, 12, 22, 0.24)";
+    resonanceCtx.fillRect(0, 0, cw, ch);
+
+    const localField = Math.max(0, resonance?.local || 0);
+    const baseGlow = 0.18 + Math.min(0.22, localField * 0.1);
+
+    for (let z = 0; z < height; z++) {
+      const row = values[z] || [];
+      for (let x = 0; x < width; x++) {
+        const v = row[x] || 0;
+        const n = Math.min(1, v / peak);
+        const drift = Math.sin(time * 0.6 + (x - z) * 0.18);
+        const swirl = Math.cos(time * 0.4 + (x + z) * 0.14);
+        const wave = (drift + swirl) * 0.12;
+        const intensity = Math.max(0, Math.min(1, n * 0.9 + baseGlow + wave));
+        const hue = THREE.MathUtils.lerp(190, 320, intensity);
+        const light = 38 + intensity * 40;
+        const alpha = Math.min(0.88, 0.22 + intensity * 0.85);
+
+        resonanceCtx.fillStyle = `hsla(${hue.toFixed(1)}, 85%, ${light.toFixed(1)}%, ${
+          alpha.toFixed(2)
+        })`;
+        resonanceCtx.fillRect(x * cellW, (height - z - 1) * cellH, cellW + 1, cellH + 1);
+      }
+    }
+
+    const grad = resonanceCtx.createRadialGradient(cw / 2, ch / 2, cw * 0.05, cw / 2, ch / 2, cw * 0.55);
+    grad.addColorStop(0, "rgba(140, 255, 220, 0.18)");
+    grad.addColorStop(1, "rgba(0, 0, 0, 0.18)");
+    resonanceCtx.globalCompositeOperation = "lighter";
+    resonanceCtx.fillStyle = grad;
+    resonanceCtx.fillRect(0, 0, cw, ch);
+    resonanceCtx.globalCompositeOperation = "source-over";
+
+    resonanceTexture.needsUpdate = true;
+    const fieldGlow = Math.min(0.35, peak * 0.55);
+    resonanceMaterial.opacity = Math.min(0.9, 0.45 + fieldGlow + localField * 0.08);
+    resonanceField.scale.set(width * cellSize, height * cellSize, 1);
+    resonanceField.position.set(centerPosition.x, resonanceField.position.y, centerPosition.z);
   }
 
   // Self avatar
@@ -982,6 +1076,8 @@
       }
       const haloScale = 1 + Math.min(2.5, r * 0.3);
       halo.scale.set(haloScale, haloScale, haloScale);
+
+      paintResonanceField(lastFrame.foamPatch, resonance, lastFrame.timeSeconds, selfGroup.position);
 
       // Update other entities at their world positions
       const seenIds = new Set();
