@@ -211,6 +211,7 @@ interface ChatMessage {
   createdAt: number;
   name?: string;
   color?: string;
+  moodHints?: string[];
 }
 
 // ---------------------------
@@ -225,6 +226,23 @@ interface IdentitySignature {
 }
 
 // ---------------------------
+// Ambient foam anomalies
+// ---------------------------
+
+interface AmbientFoamZone {
+  id: string;
+  label: string;
+  flavor?: string;
+  position: Vec3;
+  radius: number;
+  baseIntensity: number;
+  pulsePeriod: number;
+  pulseOffset: number;
+  conceptLabel?: string;
+  moodHint?: string;
+}
+
+// ---------------------------
 // World & perception
 // ---------------------------
 
@@ -234,6 +252,7 @@ interface WorldState {
   universe: UniverseDef;
   components: Components;
   foam: FoamGrid;
+  ambientZones: AmbientFoamZone[];
 }
 
 interface InputState {
@@ -254,6 +273,7 @@ interface FrameChatMessage {
   color?: string;
   distance: number;
   ageSeconds: number;
+  moodHints?: string[];
 }
 
 interface FrameSelfState {
@@ -263,6 +283,30 @@ interface FrameSelfState {
   name?: string;
   color?: string;
   mood?: string;
+}
+
+interface FrameAmbientZone {
+  label: string;
+  distance: number;
+  intensity: number;
+  radius: number;
+  flavor?: string;
+  moodHint?: string;
+}
+
+interface FrameAtmosphere {
+  foamEnergy: number;
+  foamPeak: number;
+  skyLight: number;
+  fogDensity: number;
+  phase: string;
+  skyTint?: string;
+  nearestAnomaly?: {
+    label: string;
+    distance: number;
+    intensity: number;
+    moodHint?: string;
+  };
 }
 
 interface PerceptualFrame {
@@ -280,6 +324,8 @@ interface PerceptualFrame {
   narrative?: string[];
   worldMood?: string;
   chatLog?: FrameChatMessage[];
+  ambientZones?: FrameAmbientZone[];
+  atmosphere?: FrameAtmosphere;
 }
 
 
@@ -312,6 +358,10 @@ export class CoreRealityKernel {
   // AI
   private aiWanderStates: Map<EntityId, AIWanderState> = new Map();
 
+  // Ambient zones
+  private ambientFoamZones: AmbientFoamZone[] = [];
+  private ambientConceptCooldown: Map<string, number> = new Map();
+
   // Concepts & Thought Graph
   private nextConceptId: number = 1;
   private conceptImpulses: ConceptImpulse[] = [];
@@ -328,6 +378,7 @@ export class CoreRealityKernel {
   constructor(rdlPath: string) {
     this.rdl = this.loadRdl(rdlPath);
     this.indexArchetypes(this.rdl.entity_archetypes);
+    this.ambientFoamZones = this.createAmbientFoamZones();
     this.world = this.initWorld(this.rdl.universe);
     this.bootstrapWorldFromArchetypes(this.rdl.entity_archetypes);
   }
@@ -343,6 +394,47 @@ export class CoreRealityKernel {
     for (const arch of archetypes) {
       this.archetypesById.set(arch.id, arch);
     }
+  }
+
+  private createAmbientFoamZones(): AmbientFoamZone[] {
+    return [
+      {
+        id: "ruins-signal",
+        label: "signal ruins",
+        flavor: "Old antennae spill static into the foam.",
+        position: [-40, 0, 35],
+        radius: 36,
+        baseIntensity: 3.4,
+        pulsePeriod: 26,
+        pulseOffset: 2,
+        conceptLabel: "signal",
+        moodHint: "restless static"
+      },
+      {
+        id: "calm-pool",
+        label: "quiet pool",
+        flavor: "A mirrored basin soothes the manifold.",
+        position: [52, 0, -28],
+        radius: 30,
+        baseIntensity: 2.6,
+        pulsePeriod: 38,
+        pulseOffset: 9,
+        conceptLabel: "calm",
+        moodHint: "cool and glassy"
+      },
+      {
+        id: "resonant-spire",
+        label: "resonant spire",
+        flavor: "Stone pillars hum when concepts pass nearby.",
+        position: [10, 0, 70],
+        radius: 44,
+        baseIntensity: 3.1,
+        pulsePeriod: 19,
+        pulseOffset: 15,
+        conceptLabel: "resonance",
+        moodHint: "anticipatory hum"
+      }
+    ];
   }
 
   private createFoamGrid(): FoamGrid {
@@ -371,7 +463,8 @@ export class CoreRealityKernel {
         mind: new Map(),
         identity: new Map()
       },
-      foam: this.createFoamGrid()
+      foam: this.createFoamGrid(),
+      ambientZones: this.ambientFoamZones
     };
   }
 
@@ -509,6 +602,17 @@ export class CoreRealityKernel {
       color: signature?.color
     };
 
+    const influences = this.inferConceptInfluenceFromText(normalized);
+    if (influences.length > 0) {
+      const hints: string[] = [];
+      for (const influence of influences) {
+        const strength = 0.6 + Math.min(2, influence.strength) * 0.25;
+        this.injectConcept(influence.label, entityId, strength);
+        hints.push(influence.label);
+      }
+      message.moodHints = hints;
+    }
+
     this.chatMessages.push(message);
 
     // Keep the buffer bounded
@@ -533,9 +637,16 @@ export class CoreRealityKernel {
   // Concept injection & Thought Graph
   // ---------------------------
 
-  public injectConcept(label: string, sourceEntityId?: EntityId, strength: number = 1) {
+  public injectConcept(
+    label: string,
+    sourceEntityId?: EntityId,
+    strength: number = 1,
+    positionOverride?: Vec3
+  ) {
     let position: Vec3 = [0, 0, 0];
-    if (sourceEntityId !== undefined) {
+    if (positionOverride) {
+      position = [positionOverride[0], positionOverride[1], positionOverride[2]];
+    } else if (sourceEntityId !== undefined) {
       const t = this.world.components.transform.get(sourceEntityId);
       if (t) {
         position = [t.position[0], t.position[1], t.position[2]];
@@ -567,6 +678,40 @@ export class CoreRealityKernel {
         2
       )} from entity ${sourceEntityId ?? "none"}`
     );
+  }
+
+  private inferConceptInfluenceFromText(text: string): {
+    label: string;
+    strength: number;
+  }[] {
+    const normalized = text.toLowerCase();
+    const tokenCounts: Record<string, number> = {};
+    for (const token of normalized.split(/[^a-z]+/).filter(Boolean)) {
+      tokenCounts[token] = (tokenCounts[token] || 0) + 1;
+    }
+
+    const keywordMap: Record<string, string[]> = {
+      curiosity: ["why", "how", "explore", "learn", "wonder", "search"],
+      danger: ["danger", "warning", "threat", "help", "run", "fear"],
+      calm: ["calm", "peace", "rest", "safe", "quiet", "breathe"]
+    };
+
+    const influences: { label: string; strength: number }[] = [];
+
+    for (const [label, keywords] of Object.entries(keywordMap)) {
+      let hits = 0;
+      for (const kw of keywords) {
+        const occurrences = tokenCounts[kw];
+        if (occurrences) {
+          hits += occurrences;
+        }
+      }
+      if (hits > 0) {
+        influences.push({ label, strength: hits });
+      }
+    }
+
+    return influences;
   }
 
   private edgeKey(a: string, b: string): string {
@@ -658,7 +803,9 @@ export class CoreRealityKernel {
   private buildNarrativeLines(
     selfMood: string,
     resonance: ResonanceState | undefined,
-    graphSummary: { concepts: ConceptSummary[]; edges: EdgeSummary[] } | undefined
+    graphSummary: { concepts: ConceptSummary[]; edges: EdgeSummary[] } | undefined,
+    ambientZones?: FrameAmbientZone[],
+    atmosphere?: FrameAtmosphere
   ): string[] {
     const lines: string[] = [];
 
@@ -696,6 +843,33 @@ export class CoreRealityKernel {
         } else {
           lines.push(`The world mood is ${mood}.`);
         }
+      }
+    }
+
+    if (ambientZones && ambientZones.length > 0) {
+      const nearest = ambientZones[0];
+      const distanceText = nearest.distance <= 1
+        ? "around you"
+        : `~${nearest.distance.toFixed(0)}m away`;
+      const tone = nearest.moodHint ? ` It feels ${nearest.moodHint}.` : "";
+      lines.push(`You sense the ${nearest.label} ${distanceText}.${tone}`);
+    }
+
+    if (atmosphere) {
+      const fogHint =
+        atmosphere.fogDensity > 0.7
+          ? "Mist thickens, hiding edges of the shard."
+          : atmosphere.fogDensity > 0.4
+          ? "A low fog softens distances."
+          : "Air stays clear enough to see far.";
+      const phaseLine = `Sky drifts toward ${atmosphere.phase}; ${fogHint}`;
+      lines.push(phaseLine);
+
+      if (atmosphere.foamPeak > 0.6) {
+        const foamLine = atmosphere.foamEnergy > 0.9
+          ? "The foam underfoot thrums, carrying echoes through the shard."
+          : "The foam softly ripples beneath, storing whispers of motion.";
+        lines.push(foamLine);
       }
     }
 
@@ -740,6 +914,49 @@ export class CoreRealityKernel {
     const grid = this.world.foam;
     const index = iz * grid.width + ix;
     grid.values[index] += amount;
+  }
+
+  private sampleAmbientZoneIntensity(zone: AmbientFoamZone): number {
+    const t = this.world.timeSeconds + zone.pulseOffset;
+    const period = Math.max(4, zone.pulsePeriod);
+    const phase = (t / period) * Math.PI * 2;
+    const oscillation = 0.5 + 0.5 * Math.sin(phase);
+    return zone.baseIntensity * (0.6 + 0.4 * oscillation);
+  }
+
+  private applyAmbientFoamZones(dt: number) {
+    for (const zone of this.ambientFoamZones) {
+      const intensity = this.sampleAmbientZoneIntensity(zone);
+      const spread = Math.min(zone.radius * 0.4, 25);
+      const centers: Vec3[] = [
+        zone.position,
+        [zone.position[0] + spread, zone.position[1], zone.position[2]],
+        [zone.position[0] - spread, zone.position[1], zone.position[2]],
+        [zone.position[0], zone.position[1], zone.position[2] + spread],
+        [zone.position[0], zone.position[1], zone.position[2] - spread]
+      ];
+
+      const perSource = (intensity * dt) / centers.length;
+      for (const center of centers) {
+        this.addFoamSourceAt(center, perSource);
+      }
+    }
+  }
+
+  private injectAmbientConcepts() {
+    const now = this.world.timeSeconds;
+    for (const zone of this.ambientFoamZones) {
+      const cadence = Math.max(1.5, Math.min(6, zone.pulsePeriod * 0.3));
+      const last = this.ambientConceptCooldown.get(zone.id) || -Infinity;
+      if (now - last < cadence) continue;
+
+      const intensity = this.sampleAmbientZoneIntensity(zone);
+      const label = zone.conceptLabel || zone.label;
+      const strength = 0.25 + 0.12 * intensity;
+
+      this.injectConcept(label, undefined, strength, zone.position);
+      this.ambientConceptCooldown.set(zone.id, now);
+    }
   }
 
   private stepFoam(dt: number) {
@@ -821,6 +1038,32 @@ export class CoreRealityKernel {
     };
   }
 
+  private sampleFoamStatsAround(position: Vec3, radius: number = 20) {
+    const centerIdx = this.worldToFoamIndices(position);
+    if (!centerIdx) return { mean: 0, peak: 0, count: 0 };
+
+    const [cx, cz] = centerIdx;
+    const grid = this.world.foam;
+    const r = Math.max(1, Math.floor(radius / grid.cellSize));
+
+    let sum = 0;
+    let peak = 0;
+    let count = 0;
+
+    for (let z = Math.max(0, cz - r); z <= Math.min(grid.height - 1, cz + r); z++) {
+      for (let x = Math.max(0, cx - r); x <= Math.min(grid.width - 1, cx + r); x++) {
+        const idx = z * grid.width + x;
+        const v = grid.values[idx];
+        sum += v;
+        if (v > peak) peak = v;
+        count++;
+      }
+    }
+
+    const mean = count > 0 ? sum / count : 0;
+    return { mean, peak, count };
+  }
+
   // ---------------------------
   // Resonance & perception helpers
   // ---------------------------
@@ -869,6 +1112,126 @@ export class CoreRealityKernel {
     return { local: sum, labels };
   }
 
+  private buildAmbientZonesAround(
+    position: Vec3,
+    radius: number = 200,
+    maxEntries: number = 4
+  ): FrameAmbientZone[] {
+    const readings: FrameAmbientZone[] = [];
+
+    for (const zone of this.ambientFoamZones) {
+      const dx = zone.position[0] - position[0];
+      const dy = zone.position[1] - position[1];
+      const dz = zone.position[2] - position[2];
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      const edgeDistance = Math.max(0, dist - zone.radius);
+      if (edgeDistance > radius) continue;
+
+      readings.push({
+        label: zone.label,
+        flavor: zone.flavor,
+        radius: zone.radius,
+        distance: edgeDistance,
+        intensity: this.sampleAmbientZoneIntensity(zone),
+        moodHint: zone.moodHint
+      });
+    }
+
+    readings.sort((a, b) => a.distance - b.distance);
+    return readings.slice(0, maxEntries);
+  }
+
+  private clamp01(v: number) {
+    return Math.min(1, Math.max(0, v));
+  }
+
+  private lerpHex(a: string, b: string, t: number) {
+    const ca = parseInt(a.replace("#", ""), 16);
+    const cb = parseInt(b.replace("#", ""), 16);
+    const ar = (ca >> 16) & 0xff;
+    const ag = (ca >> 8) & 0xff;
+    const ab = ca & 0xff;
+    const br = (cb >> 16) & 0xff;
+    const bg = (cb >> 8) & 0xff;
+    const bb = cb & 0xff;
+    const r = Math.round(ar + (br - ar) * t);
+    const g = Math.round(ag + (bg - ag) * t);
+    const b = Math.round(ab + (bb - ab) * t);
+    return `#${((r << 16) | (g << 8) | b).toString(16).padStart(6, "0")}`;
+  }
+
+  private pickSkyTint(phase: string, skyLight: number, foamEnergy: number) {
+    const dawn = "#82b8ff";
+    const day = "#a4e0ff";
+    const dusk = "#f7a08a";
+    const night = "#0d1024";
+    const foamGlow = "#7cf2c7";
+
+    let base = night;
+    if (phase.includes("dawn")) base = this.lerpHex(night, dawn, 0.6);
+    else if (phase.includes("dusk")) base = this.lerpHex(night, dusk, 0.7);
+    else if (phase.includes("day")) base = day;
+
+    const foamFactor = this.clamp01(foamEnergy * 0.4);
+    const withFoam = this.lerpHex(base, foamGlow, foamFactor * 0.45);
+    return this.lerpHex(withFoam, day, skyLight * 0.2);
+  }
+
+  private buildAtmosphereCue(
+    position: Vec3,
+    ambientZones: FrameAmbientZone[] = [],
+    worldMood?: string
+  ): FrameAtmosphere {
+    const foam = this.sampleFoamStatsAround(position, 24);
+    const cycleSeconds = 240;
+    const dayFrac = (this.world.timeSeconds % cycleSeconds) / cycleSeconds;
+    const sunWave = Math.sin(dayFrac * Math.PI * 2);
+    const skyLight = this.clamp01((sunWave + 1) / 2);
+    const twilight = Math.abs(sunWave);
+    const phase =
+      skyLight < 0.2
+        ? "night"
+        : sunWave > 0.4
+        ? "bright day"
+        : sunWave > 0.05
+        ? "late day"
+        : sunWave > -0.05
+        ? "dawn"
+        : sunWave > -0.4
+        ? "dusk"
+        : "night";
+
+    let fogDensity = 0.12 + (1 - skyLight) * 0.4 + foam.mean * 0.12;
+    const mood = (worldMood || "").toLowerCase();
+    if (mood.includes("anxious") || mood.includes("tense")) {
+      fogDensity += 0.08;
+    } else if (mood.includes("calm") || mood.includes("settled")) {
+      fogDensity *= 0.82;
+    }
+    fogDensity += (1 - twilight) * 0.05;
+    fogDensity = this.clamp01(fogDensity);
+    const atmosphere: FrameAtmosphere = {
+      foamEnergy: foam.mean,
+      foamPeak: foam.peak,
+      skyLight,
+      fogDensity,
+      phase,
+      skyTint: this.pickSkyTint(phase, skyLight, foam.mean)
+    };
+
+    if (ambientZones.length > 0) {
+      const nearest = ambientZones[0];
+      atmosphere.nearestAnomaly = {
+        label: nearest.label,
+        distance: nearest.distance,
+        intensity: nearest.intensity,
+        moodHint: nearest.moodHint
+      };
+    }
+
+    return atmosphere;
+  }
+
   private buildChatLogAround(position: Vec3, radius: number = 80, maxEntries = 10): FrameChatMessage[] {
     const now = this.world.timeSeconds;
     const out: FrameChatMessage[] = [];
@@ -886,7 +1249,8 @@ export class CoreRealityKernel {
         name: message.name,
         color: message.color,
         distance: dist,
-        ageSeconds: age
+        ageSeconds: age,
+        moodHints: message.moodHints
       });
     }
 
@@ -960,10 +1324,18 @@ export class CoreRealityKernel {
     const foamPatch = this.buildFoamPatchAround(position, 31);
     const concepts = this.buildConceptsAround(position, 60);
     const resonance = this.buildLocalResonance(position);
+    const ambientZones = this.buildAmbientZonesAround(position, 200, 4);
     const graphSummary = this.buildGlobalGraphSummary();
-    const selfMood = this.classifyMood(resonance);
     const worldMood = this.classifyWorldMood(graphSummary);
-    const narrative = this.buildNarrativeLines(selfMood, resonance, graphSummary);
+    const atmosphere = this.buildAtmosphereCue(position, ambientZones, worldMood);
+    const selfMood = this.classifyMood(resonance);
+    const narrative = this.buildNarrativeLines(
+      selfMood,
+      resonance,
+      graphSummary,
+      ambientZones,
+      atmosphere
+    );
     const chatLog = this.buildChatLogAround(position, 120, 12);
 
     return {
@@ -981,7 +1353,9 @@ export class CoreRealityKernel {
       foamPatch,
       concepts,
       resonance,
+      ambientZones,
       graphSummary,
+      atmosphere,
       narrative,
       worldMood,
       chatLog
@@ -1242,6 +1616,9 @@ export class CoreRealityKernel {
       if (!transform) continue;
       this.addFoamSourceAt(transform.position, 2.0 * dt);
     }
+
+    this.applyAmbientFoamZones(dt);
+    this.injectAmbientConcepts();
     this.stepFoam(dt);
   }
 

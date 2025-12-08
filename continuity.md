@@ -97,6 +97,14 @@ NPC wander logic influenced by resonance
 
 Foam manifold (200×200 patch) with diffusion + decay
 
+Ambient foam anomalies pulsing from shard landmarks
+
+Ambient anomalies now seed concept pulses with mood hints and narratively surface when nearby
+
+Atmospheric cues now report local foam energy plus the nearest anomaly tone, tinting the HUD mood wash and narrative
+
+Skyscape now drifts through a shard day/night cycle; light and fog react to foam energy and world mood and tint client palettes and HUD text
+
 Concept injection system + TTL
 
 Thought graph (nodes + weighted edges)
@@ -108,6 +116,10 @@ Mood classifier
 World mood classifier
 
 Narrative generator
+
+Proximity chat logs with keyword-driven concept seeding (danger/curiosity/calm), feeding resonance + graph
+
+Keyword detection now tokenizes chat text to avoid accidental substring matches before seeding resonance impulses.
 
 getPerceptualFrame bundles everything per tick
 
@@ -138,6 +150,8 @@ Resonance
 Graph summary
 
 Narrative
+
+HUD lists nearby ambient anomalies with range and strength
 
 Deployment
 
