@@ -199,6 +199,14 @@ interface ResonanceState {
   labels: { [label: string]: number };
 }
 
+interface ConceptEcho {
+  label: string;
+  distance: number;
+  ageSeconds: number;
+  strength: number;
+  direction: Vec3;
+}
+
 // ---------------------------
 // Proximity chat (server-side log)
 // ---------------------------
@@ -316,6 +324,7 @@ interface PerceptualFrame {
   nearbyEntities: PerceivedEntity[];
   foamPatch?: FoamPatch;
   concepts?: PerceivedConcept[];
+  conceptEchoes?: ConceptEcho[];
   resonance?: ResonanceState;
   graphSummary?: {
     concepts: ConceptSummary[];
@@ -804,6 +813,7 @@ export class CoreRealityKernel {
     selfMood: string,
     resonance: ResonanceState | undefined,
     graphSummary: { concepts: ConceptSummary[]; edges: EdgeSummary[] } | undefined,
+    conceptEchoes?: ConceptEcho[],
     ambientZones?: FrameAmbientZone[],
     atmosphere?: FrameAtmosphere
   ): string[] {
@@ -844,6 +854,21 @@ export class CoreRealityKernel {
           lines.push(`The world mood is ${mood}.`);
         }
       }
+    }
+
+    if (conceptEchoes && conceptEchoes.length > 0) {
+      const echo = conceptEchoes[0];
+      const age = echo.ageSeconds;
+      const ageText =
+        age < 6
+          ? "just now"
+          : age < 18
+          ? "moments ago"
+          : `${age.toFixed(0)}s ago`;
+      const distanceText = echo.distance <= 2
+        ? "right here"
+        : `${echo.distance.toFixed(0)}m away`;
+      lines.push(`A ${echo.label} ripple lingers ${distanceText}, cast ${ageText}.`);
     }
 
     if (ambientZones && ambientZones.length > 0) {
@@ -1099,6 +1124,44 @@ export class CoreRealityKernel {
     return out;
   }
 
+  private buildConceptEchoesAround(
+    position: Vec3,
+    radius: number = 120,
+    horizonSeconds: number = 90,
+    maxEntries: number = 8
+  ): ConceptEcho[] {
+    const now = this.world.timeSeconds;
+    const echoes: ConceptEcho[] = [];
+
+    for (const impulse of this.conceptImpulses) {
+      const age = now - impulse.createdAt;
+      if (age < 0 || age > horizonSeconds) continue;
+
+      const dx = impulse.position[0] - position[0];
+      const dy = impulse.position[1] - position[1];
+      const dz = impulse.position[2] - position[2];
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (dist > radius) continue;
+
+      const ageFactor = 1 - age / horizonSeconds;
+      const spatialFactor = 1 / (1 + dist / 20);
+      const strength = impulse.baseStrength * ageFactor * spatialFactor;
+
+      if (strength <= 0.01) continue;
+
+      echoes.push({
+        label: impulse.label,
+        distance: dist,
+        ageSeconds: age,
+        strength,
+        direction: [dx, dy, dz]
+      });
+    }
+
+    echoes.sort((a, b) => b.strength - a.strength);
+    return echoes.slice(0, maxEntries);
+  }
+
   private buildLocalResonance(position: Vec3): ResonanceState {
     const concepts = this.buildConceptsAround(position, 60);
     const labels: { [label: string]: number } = {};
@@ -1145,9 +1208,9 @@ export class CoreRealityKernel {
     return Math.min(1, Math.max(0, v));
   }
 
-  private lerpHex(a: string, b: string, t: number) {
+  private lerpHex(a: string, hexB: string, t: number) {
     const ca = parseInt(a.replace("#", ""), 16);
-    const cb = parseInt(b.replace("#", ""), 16);
+    const cb = parseInt(hexB.replace("#", ""), 16);
     const ar = (ca >> 16) & 0xff;
     const ag = (ca >> 8) & 0xff;
     const ab = ca & 0xff;
@@ -1156,8 +1219,8 @@ export class CoreRealityKernel {
     const bb = cb & 0xff;
     const r = Math.round(ar + (br - ar) * t);
     const g = Math.round(ag + (bg - ag) * t);
-    const b = Math.round(ab + (bb - ab) * t);
-    return `#${((r << 16) | (g << 8) | b).toString(16).padStart(6, "0")}`;
+    const bChannel = Math.round(ab + (bb - ab) * t);
+    return `#${((r << 16) | (g << 8) | bChannel).toString(16).padStart(6, "0")}`;
   }
 
   private pickSkyTint(phase: string, skyLight: number, foamEnergy: number) {
@@ -1323,6 +1386,7 @@ export class CoreRealityKernel {
     }
     const foamPatch = this.buildFoamPatchAround(position, 31);
     const concepts = this.buildConceptsAround(position, 60);
+    const conceptEchoes = this.buildConceptEchoesAround(position, 140, 90, 6);
     const resonance = this.buildLocalResonance(position);
     const ambientZones = this.buildAmbientZonesAround(position, 200, 4);
     const graphSummary = this.buildGlobalGraphSummary();
@@ -1333,6 +1397,7 @@ export class CoreRealityKernel {
       selfMood,
       resonance,
       graphSummary,
+      conceptEchoes,
       ambientZones,
       atmosphere
     );
@@ -1352,6 +1417,7 @@ export class CoreRealityKernel {
       nearbyEntities,
       foamPatch,
       concepts,
+      conceptEchoes,
       resonance,
       ambientZones,
       graphSummary,

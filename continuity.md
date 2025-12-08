@@ -121,6 +121,8 @@ Proximity chat logs with keyword-driven concept seeding (danger/curiosity/calm),
 
 Keyword detection now tokenizes chat text to avoid accidental substring matches before seeding resonance impulses.
 
+Recent concept pulses are exposed as “pulse echoes” (distance/age/strength) in perceptual frames, narratives, and the HUD so players can sense lingering meaning nearby.
+
 getPerceptualFrame bundles everything per tick
 
 Client

@@ -170,6 +170,8 @@
       <div id="resonanceList" class="muted">(no field activity yet)</div>
       <h2>Graph summary</h2>
       <div id="graphSummary" class="muted">(no concepts yet)</div>
+      <h2>Pulse echoes</h2>
+      <div id="conceptEchoes" class="muted">(no nearby pulses yet)</div>
       <h2>Ambient anomalies</h2>
       <div id="ambientList" class="muted">(no anomalies nearby)</div>
     </div>
@@ -210,6 +212,7 @@
   const resonanceEl = document.getElementById("resonanceList");
   const graphSummaryEl = document.getElementById("graphSummary");
   const ambientListEl = document.getElementById("ambientList");
+  const conceptEchoesEl = document.getElementById("conceptEchoes");
   const narrativeLinesEl = document.getElementById("narrativeLines");
   const chatLogEl = document.getElementById("chatLog");
   const chatInput = document.getElementById("chatInput");
@@ -826,6 +829,29 @@
     graphSummaryEl.textContent = lines.join(" · ");
   }
 
+  function setConceptEchoHUD(echoes) {
+    conceptEchoesEl.innerHTML = "";
+    if (!Array.isArray(echoes) || echoes.length === 0) {
+      conceptEchoesEl.textContent = "(no nearby pulses yet)";
+      conceptEchoesEl.className = "muted";
+      return;
+    }
+
+    conceptEchoesEl.className = "";
+    const limited = echoes.slice(0, 5);
+    for (const echo of limited) {
+      const p = document.createElement("p");
+      p.style.margin = "2px 0";
+      const age = echo.ageSeconds || 0;
+      let ageText = `${age.toFixed(0)}s ago`;
+      if (age < 6) ageText = "just now";
+      else if (age < 18) ageText = "moments ago";
+      p.textContent =
+        `${echo.label}: ${echo.strength.toFixed(2)} · ${echo.distance.toFixed(0)}m · ${ageText}`;
+      conceptEchoesEl.appendChild(p);
+    }
+  }
+
   function setAmbientHUD(ambientZones) {
     ambientListEl.innerHTML = "";
     if (!Array.isArray(ambientZones) || ambientZones.length === 0) {
@@ -1036,6 +1062,7 @@
       setAtmosphereHUD(lastAtmosphere);
       setResonanceHUD(resonance);
       setGraphSummaryHUD(graphSummary);
+      setConceptEchoHUD(lastFrame.conceptEchoes);
       setAmbientHUD(lastFrame.ambientZones);
       setNarrativeHUD(narrative);
       setChatLog(lastFrame.chatLog);
