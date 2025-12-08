@@ -343,6 +343,18 @@ Your final goal is to grow this shard into a full simulated reality engine.
 
 - Added mood memory inside the CoreRealityKernel so per-entity mood classification no longer flickers on small resonance changes. Moods now change only when the signal is strong enough or has persisted, reinforcing embodiment and persistence in the shard.
 - Enhanced mood memory to track confidence and lifetime, decaying stale impressions and exposing mood confidence to perceptual frames and narrative text for a more embodied HUD.
+- Added shard-level mood memory and cached graph summaries so the "world mood" now lingers, reports confidence and duration to the HUD, and fuels steadier narrative/atmosphere cues.
+- Tracked world-mood signal quality and trend so the shard reports when its feeling is strengthening, fading, or stale, and surfaced those cues to the HUD and narrative.
+- Introduced decay for thought-graph memory and world-mood signals so stale concepts fade, shard feeling goes stale without activity, and HUD confidence now reflects recency.
+- Taught world-mood memory to bleed stability after long inactivity and reset to "empty" when signals stay stale, so HUD/narrative cues reflect fading shard feelings instead of frozen snapshots.
+
+9. ROAD TO THE FULL MATRIX PLATFORM
+
+- Harden persistence: persist world mood/graph/foam across sessions and shard restarts.
+- Deepen cognition: add planner/reflector loops for NPCs and shard mood deliberation.
+- Multiplayer embodiment: synchronize multiple player avatars and proximity chat across shards.
+- Manifold ecology: expand ambient zones, weather, and foam anomalies that imprint long-lived culture traces.
+- Tooling: dashboards for graph/mood diagnostics, replay, and heatmaps for shard activity.
 
 8. FINAL NOTE TO THE USER
 
