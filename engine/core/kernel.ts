@@ -19,6 +19,15 @@ const CONCEPT_TTL_SECONDS = 20;   // lifetime of each impulse
 const CONCEPT_COOC_RADIUS = 40;   // spatial radius for co-occurrence
 const CONCEPT_COOC_WINDOW = 5;    // time window (s) for co-occurrence
 
+// Persistence
+const SHARD_STATE_VERSION = 1;
+const SHARD_STATE_PATH = process.env.SHARD_STATE_PATH
+  ? path.resolve(process.env.SHARD_STATE_PATH)
+  : path.resolve(process.cwd(), "infra", "state", "shard-state.json");
+const SHARD_STATE_SAVE_INTERVAL_TICKS = Number(
+  process.env.SHARD_STATE_SAVE_INTERVAL_TICKS || 300
+);
+
 // ---------------------------
 // Types (aligned with RDL v0.1)
 // ---------------------------
@@ -197,6 +206,38 @@ interface EdgeSummary {
 interface ResonanceState {
   local: number;
   labels: { [label: string]: number };
+}
+
+interface PersistedGraphNode {
+  label: string;
+  totalCount: number;
+  lastSeenAt: number;
+}
+
+interface PersistedGraphEdge {
+  a: string;
+  b: string;
+  weight: number;
+  lastCooccurAt: number;
+}
+
+interface PersistedWorldMoodMemory {
+  mood: string;
+  stability: number;
+  lastChangeAt: number;
+  lastSeenAt: number;
+  trend: "rising" | "steady" | "fading";
+}
+
+interface PersistedShardState {
+  version: number;
+  savedAt: number;
+  tick: number;
+  timeSeconds: number;
+  foam: number[];
+  graphNodes: PersistedGraphNode[];
+  graphEdges: PersistedGraphEdge[];
+  worldMoodMemory?: PersistedWorldMoodMemory;
 }
 
 interface ConceptEcho {
@@ -427,6 +468,7 @@ export class CoreRealityKernel {
     this.ambientFoamZones = this.createAmbientFoamZones();
     this.world = this.initWorld(this.rdl.universe);
     this.bootstrapWorldFromArchetypes(this.rdl.entity_archetypes);
+    this.restoreStateFromDisk();
     this.updateWorldMoodMemory();
   }
 
@@ -435,6 +477,145 @@ export class CoreRealityKernel {
     const raw = fs.readFileSync(abs, "utf-8");
     const data = JSON.parse(raw);
     return data as RDLCore;
+  }
+
+  private ensureStateDir() {
+    const dir = path.dirname(SHARD_STATE_PATH);
+    fs.mkdirSync(dir, { recursive: true });
+  }
+
+  private snapshotState(): PersistedShardState {
+    const foamValues = Array.from(this.world.foam.values);
+
+    const graphNodes: PersistedGraphNode[] = [];
+    for (const node of this.graphNodes.values()) {
+      graphNodes.push({
+        label: node.label,
+        totalCount: node.totalCount,
+        lastSeenAt: node.lastSeenAt
+      });
+    }
+
+    const graphEdges: PersistedGraphEdge[] = [];
+    for (const edge of this.graphEdges.values()) {
+      graphEdges.push({
+        a: edge.a,
+        b: edge.b,
+        weight: edge.weight,
+        lastCooccurAt: edge.lastCooccurAt
+      });
+    }
+
+    let worldMoodMemory: PersistedWorldMoodMemory | undefined;
+    if (this.worldMoodMemory) {
+      worldMoodMemory = {
+        mood: this.worldMoodMemory.mood,
+        stability: this.worldMoodMemory.stability,
+        lastChangeAt: this.worldMoodMemory.lastChangeAt,
+        lastSeenAt: this.worldMoodMemory.lastSeenAt,
+        trend: this.worldMoodTrend
+      };
+    }
+
+    return {
+      version: SHARD_STATE_VERSION,
+      savedAt: Date.now() / 1000,
+      tick: this.world.tick,
+      timeSeconds: this.world.timeSeconds,
+      foam: foamValues,
+      graphNodes,
+      graphEdges,
+      worldMoodMemory
+    };
+  }
+
+  private restoreStateFromDisk() {
+    if (!fs.existsSync(SHARD_STATE_PATH)) {
+      console.log(`[CRK] No persisted shard state found at ${SHARD_STATE_PATH}`);
+      return;
+    }
+
+    try {
+      const raw = fs.readFileSync(SHARD_STATE_PATH, "utf-8");
+      const data = JSON.parse(raw) as PersistedShardState;
+
+      if (data.version !== SHARD_STATE_VERSION) {
+        console.warn(
+          `[CRK] Persisted state version ${data.version} does not match current ${SHARD_STATE_VERSION}; skipping restore.`
+        );
+        return;
+      }
+
+      const expectedFoamSize = this.world.foam.width * this.world.foam.height;
+      if (data.foam?.length === expectedFoamSize) {
+        this.world.foam.values.set(data.foam);
+        this.world.foam.scratch.fill(0);
+      } else {
+        console.warn(
+          `[CRK] Persisted foam size ${data.foam?.length} mismatches expected ${expectedFoamSize}; resetting foam.`
+        );
+      }
+
+      this.graphNodes.clear();
+      for (const node of data.graphNodes || []) {
+        this.graphNodes.set(node.label, {
+          label: node.label,
+          totalCount: node.totalCount,
+          lastSeenAt: node.lastSeenAt
+        });
+      }
+
+      this.graphEdges.clear();
+      for (const edge of data.graphEdges || []) {
+        const key = this.edgeKey(edge.a, edge.b);
+        this.graphEdges.set(key, {
+          a: edge.a,
+          b: edge.b,
+          weight: edge.weight,
+          lastCooccurAt: edge.lastCooccurAt
+        });
+      }
+
+      if (data.worldMoodMemory) {
+        this.worldMoodMemory = {
+          mood: data.worldMoodMemory.mood,
+          stability: data.worldMoodMemory.stability,
+          lastChangeAt: data.worldMoodMemory.lastChangeAt,
+          lastSeenAt: data.worldMoodMemory.lastSeenAt
+        };
+        this.worldMoodTrend = data.worldMoodMemory.trend;
+      }
+
+      this.world.tick = data.tick || this.world.tick;
+      this.world.timeSeconds = data.timeSeconds || this.world.timeSeconds;
+
+      console.log(
+        `[CRK] Restored shard state from disk (tick=${this.world.tick}, t=${this.world.timeSeconds.toFixed(
+          2
+        )}s)`
+      );
+    } catch (err) {
+      console.error("[CRK] Failed to restore shard state:", err);
+    }
+  }
+
+  private persistStateToDisk() {
+    try {
+      this.ensureStateDir();
+      const snapshot = this.snapshotState();
+      fs.writeFileSync(SHARD_STATE_PATH, JSON.stringify(snapshot, null, 2), "utf-8");
+      console.log(
+        `[CRK] Persisted shard state to ${SHARD_STATE_PATH} at tick=${snapshot.tick}`
+      );
+    } catch (err) {
+      console.error("[CRK] Failed to persist shard state:", err);
+    }
+  }
+
+  private maybePersistState() {
+    if (SHARD_STATE_SAVE_INTERVAL_TICKS <= 0) return;
+    if (this.world.tick % SHARD_STATE_SAVE_INTERVAL_TICKS !== 0) return;
+    this.persistStateToDisk();
   }
 
   private indexArchetypes(archetypes: EntityArchetype[]) {
@@ -1761,6 +1942,7 @@ export class CoreRealityKernel {
 
   public stop() {
     this.running = false;
+    this.persistStateToDisk();
     console.log("[CRK] Stopped simulation.");
   }
 
@@ -1778,6 +1960,7 @@ export class CoreRealityKernel {
     this.decayGraphMemory(dt);
     this.updateWorldMoodMemory();
     this.resolveInteractions();
+    this.maybePersistState();
     this.emitTickSummary();
   }
 

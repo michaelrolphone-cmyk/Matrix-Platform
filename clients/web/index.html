@@ -136,6 +136,30 @@
       background: radial-gradient(circle at 60% 10%, rgba(136, 187, 255, 0.18), transparent 50%);
     }
 
+    #entrainmentPulse {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 1;
+      mix-blend-mode: screen;
+      opacity: calc(var(--pulse-strength, 0) * 0.9);
+      background: radial-gradient(
+        circle at 50% 50%,
+        color-mix(in srgb, var(--pulse-color, #7af7d0) 70%, transparent),
+        transparent 55%
+      );
+      transform: scale(var(--pulse-scale, 1)) rotate(0deg);
+      filter: blur(calc(12px + 18px * var(--pulse-strength, 0.3)));
+      transition: opacity 0.4s ease, background 0.5s ease, filter 0.4s ease;
+      animation: entrainPulse 4s infinite ease-in-out;
+    }
+
+    @keyframes entrainPulse {
+      0% { transform: scale(0.96); opacity: calc(var(--pulse-strength, 0) * 0.8); }
+      50% { transform: scale(1.04); opacity: calc(var(--pulse-strength, 0) * 1.1); }
+      100% { transform: scale(0.96); opacity: calc(var(--pulse-strength, 0) * 0.8); }
+    }
+
     canvas {
       display: block;
       width: 100%;
@@ -150,6 +174,7 @@
 </head>
 <body>
 <div id="moodTint"></div>
+<div id="entrainmentPulse"></div>
 <div id="app">
   <div id="ui">
     <div class="panel">
@@ -174,6 +199,8 @@
       <div id="conceptEchoes" class="muted">(no nearby pulses yet)</div>
       <h2>Ambient anomalies</h2>
       <div id="ambientList" class="muted">(no anomalies nearby)</div>
+      <h2>Audio/Visual entrainment</h2>
+      <div id="entrainmentText" class="muted">(engage with the shard to begin entrainment)</div>
     </div>
   </div>
 
@@ -217,6 +244,8 @@
   const chatLogEl = document.getElementById("chatLog");
   const chatInput = document.getElementById("chatInput");
   const moodTint = document.getElementById("moodTint");
+  const entrainmentPulse = document.getElementById("entrainmentPulse");
+  const entrainmentText = document.getElementById("entrainmentText");
   const canvas = document.getElementById("view");
 
   // ---------------------------
@@ -612,6 +641,111 @@
       moodTint.style.background = `radial-gradient(circle at 70% 14%, ${skyHex}33, transparent 55%)`;
       moodTint.style.opacity = overlayStrength.toFixed(2);
     }
+    if (entrainmentPulse) {
+      entrainmentPulse.style.setProperty("--pulse-color", skyHex);
+    }
+  }
+
+  // ---------------------------
+  // Audio/visual entrainment
+  // ---------------------------
+
+  const entrainmentAudio = {
+    ctx: null,
+    leftOsc: null,
+    rightOsc: null,
+    leftGain: null,
+    rightGain: null,
+    running: false
+  };
+
+  function ensureEntrainmentAudio() {
+    if (entrainmentAudio.running && entrainmentAudio.ctx) {
+      if (entrainmentAudio.ctx.state === "suspended") {
+        entrainmentAudio.ctx.resume();
+      }
+      return;
+    }
+
+    try {
+      const Ctor = (window.AudioContext || window.webkitAudioContext);
+      if (!Ctor) return;
+
+      const ctx = new Ctor();
+      const leftOsc = ctx.createOscillator();
+      const rightOsc = ctx.createOscillator();
+      const leftGain = ctx.createGain();
+      const rightGain = ctx.createGain();
+      const merger = ctx.createChannelMerger(2);
+
+      leftOsc.type = "sine";
+      rightOsc.type = "sine";
+      leftGain.gain.value = 0;
+      rightGain.gain.value = 0;
+
+      leftOsc.connect(leftGain).connect(merger, 0, 0);
+      rightOsc.connect(rightGain).connect(merger, 0, 1);
+      merger.connect(ctx.destination);
+
+      leftOsc.start();
+      rightOsc.start();
+
+      entrainmentAudio.ctx = ctx;
+      entrainmentAudio.leftOsc = leftOsc;
+      entrainmentAudio.rightOsc = rightOsc;
+      entrainmentAudio.leftGain = leftGain;
+      entrainmentAudio.rightGain = rightGain;
+      entrainmentAudio.running = true;
+
+      if (entrainmentText) {
+        entrainmentText.textContent = "entrainment linked to the manifold";
+        entrainmentText.classList.remove("muted");
+      }
+    } catch (err) {
+      console.warn("Failed to start entrainment audio", err);
+    }
+  }
+
+  function updateEntrainment(frame) {
+    if (!entrainmentAudio.ctx || !entrainmentAudio.running) return;
+
+    const ctx = entrainmentAudio.ctx;
+    const resonance = frame?.resonance?.local || 0;
+    const worldMoodConfidence = frame?.worldMoodConfidence || 0;
+    const foamEnergy = frame?.atmosphere?.foamEnergy || 0;
+    const time = frame?.timeSeconds || 0;
+
+    const beat = 3 + Math.min(9, resonance * 0.6 + foamEnergy * 2 + worldMoodConfidence * 5);
+    const carrier = 140 + Math.min(220, resonance * 70 + foamEnergy * 120 + worldMoodConfidence * 80);
+    const depth = Math.min(0.08, 0.01 + resonance * 0.025 + foamEnergy * 0.015 + worldMoodConfidence * 0.02);
+
+    const leftFreq = Math.max(40, carrier - beat * 0.5);
+    const rightFreq = Math.max(40, carrier + beat * 0.5);
+    const breath = 0.7 + 0.3 * Math.sin(time * 0.8);
+    const leftGain = depth * breath;
+    const rightGain = depth * (1.1 - breath * 0.4);
+
+    entrainmentAudio.leftOsc.frequency.setTargetAtTime(leftFreq, ctx.currentTime, 0.35);
+    entrainmentAudio.rightOsc.frequency.setTargetAtTime(rightFreq, ctx.currentTime, 0.35);
+    entrainmentAudio.leftGain.gain.setTargetAtTime(leftGain, ctx.currentTime, 0.5);
+    entrainmentAudio.rightGain.gain.setTargetAtTime(rightGain, ctx.currentTime, 0.5);
+
+    if (entrainmentPulse) {
+      const pulseStrength = Math.min(1, depth * 12 + resonance * 0.08 + foamEnergy * 0.06);
+      const scale = 1 + pulseStrength * 0.18;
+      const paletteColor = lastBasePalette?.dirColor?.getHexString?.()
+        ? `#${lastBasePalette.dirColor.getHexString()}`
+        : "#7af7d0";
+      entrainmentPulse.style.setProperty("--pulse-strength", pulseStrength.toFixed(2));
+      entrainmentPulse.style.setProperty("--pulse-scale", scale.toFixed(2));
+      entrainmentPulse.style.setProperty("--pulse-color", paletteColor);
+    }
+
+    if (entrainmentText) {
+      const depthPct = (depth * 100).toFixed(1);
+      entrainmentText.textContent = `carrier ${carrier.toFixed(0)}hz · beat ${beat.toFixed(2)}hz · depth ${depthPct}%`;
+      entrainmentText.classList.remove("muted");
+    }
   }
 
   function paintResonanceField(foamPatch, resonance, timeSeconds, centerPosition) {
@@ -802,6 +936,10 @@
   }
 
   connect();
+
+  // Unlock entrainment as soon as the user interacts so audio starts on-demand
+  window.addEventListener("pointerdown", ensureEntrainmentAudio);
+  window.addEventListener("keydown", ensureEntrainmentAudio);
 
   // ---------------------------
   // Input handling
@@ -1331,6 +1469,7 @@
       setAmbientHUD(lastFrame.ambientZones);
       setNarrativeHUD(narrative);
       setChatLog(lastFrame.chatLog);
+      updateEntrainment(lastFrame);
     }
 
     renderer.render(scene, camera);
